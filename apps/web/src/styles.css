@@ -1,4 +1,6 @@
 /* Kanon-UI color palette + Brutalist/Minimalist Firecrawl/Linear geometry */
+@import "tailwindcss";
+
 :root {
   --bg: #ece6da;
   --surface: #f4f0e8;
@@ -10,6 +12,13 @@
   --accent-fill: #3f00ff;
   --accent-text: #3f00ff;
   --accent-soft: color-mix(in srgb, var(--accent-fill) 10%, transparent);
+  --panel: var(--surface);
+  --panel-soft: var(--surface-2);
+  --panel-hover: var(--surface-hover);
+  --fg: var(--text);
+  --accent: var(--accent-fill);
+  --border-strong: color-mix(in srgb, var(--border) 68%, var(--text));
+  --danger-line: color-mix(in srgb, var(--danger) 45%, transparent);
   --ok: #157f3d;
   --ok-soft: color-mix(in srgb, var(--ok) 12%, transparent);
   --warn: #a16207;

@@ -1,0 +1,256 @@
+lockfile_version: "1"
+apm_version: 0.35.0
+dependencies:
+  - repo_url: shadcn-ui/ui
+    name: shadcn
+    host: github.com
+    resolved_commit: f50887ae68d0fdcbfbe86b57be08af94a4c88a68
+    version: unknown
+    virtual_path: skills/shadcn
+    is_virtual: true
+    package_type: claude_skill
+    deployed_files:
+      - .agents/skills/shadcn
+      - .agents/skills/shadcn/SKILL.md
+      - .agents/skills/shadcn/agents/openai.yml
+      - .agents/skills/shadcn/assets/shadcn-small.png
+      - .agents/skills/shadcn/assets/shadcn.png
+      - .agents/skills/shadcn/assets/showcase/color-pair.tsx
+      - .agents/skills/shadcn/assets/showcase/preview-states.css
+      - .agents/skills/shadcn/assets/showcase/state-matrix.tsx
+      - .agents/skills/shadcn/cli.md
+      - .agents/skills/shadcn/customization.md
+      - .agents/skills/shadcn/design-system-page.md
+      - .agents/skills/shadcn/design-system.md
+      - .agents/skills/shadcn/evals/evals.json
+      - .agents/skills/shadcn/mcp.md
+      - .agents/skills/shadcn/registry.md
+      - .agents/skills/shadcn/rules/base-vs-radix.md
+      - .agents/skills/shadcn/rules/chat.md
+      - .agents/skills/shadcn/rules/composition.md
+      - .agents/skills/shadcn/rules/forms.md
+      - .agents/skills/shadcn/rules/icons.md
+      - .agents/skills/shadcn/rules/styling.md
+      - .agents/skills/shadcn/scripts/showcase-coverage.mjs
+    deployed_file_hashes:
+      .agents/skills/shadcn/SKILL.md: sha256:93951e5e83f616a3e046491c00d770bd54c0a64164706cd1191822a233d27592
+      .agents/skills/shadcn/agents/openai.yml: sha256:35db91b1eef58b2abe01da9b88577de5a44e233b740cd93d692ddeeadd2afe4d
+      .agents/skills/shadcn/assets/shadcn-small.png: sha256:0ecc62d682727f68fc4937eed19960c706714fa084d44f63028d611ae02bf3d7
+      .agents/skills/shadcn/assets/shadcn.png: sha256:7d60ad6fec4d89a0d44ba5a3c9283d2fea0047af5467f9227040e20d927d39b7
+      .agents/skills/shadcn/assets/showcase/color-pair.tsx: sha256:6028f0b677912216822fdaf76ae6b8863c429916ed4a9626b73f4de4506f8ee4
+      .agents/skills/shadcn/assets/showcase/preview-states.css: sha256:8d9e3cec24dd01b11c5ba12196d0376a131797d9ad247ea624e66eb8bbf61b0e
+      .agents/skills/shadcn/assets/showcase/state-matrix.tsx: sha256:07794119fe05ff735358b3f8ca30a8297617ab64dfb3901dce4d89fe5f443458
+      .agents/skills/shadcn/cli.md: sha256:a381e35bf36fe7bb851952c13707e01e82434fd7a4a4e53f6df26c6370838904
+      .agents/skills/shadcn/customization.md: sha256:a19e81c78843df255e85755e52659268d793845add845b34ad8091f62bff3af9
+      .agents/skills/shadcn/design-system-page.md: sha256:c541d661af159548744be3e27f79e7da710ab83f9afd448a4346f7ff1531d328
+      .agents/skills/shadcn/design-system.md: sha256:9ed11e93e7e80e34c8795d5ba82e5420ca905e8e9949fef79cbe9239184fd06b
+      .agents/skills/shadcn/evals/evals.json: sha256:e82c747326a5c21e37a1c962274d36b1bfebb3e6602ee368b98e2dba5db18369
+      .agents/skills/shadcn/mcp.md: sha256:8d696b4e45b7d0e337367248513bd9acebe8f3bcfd7b748c775e5a337c8f38c8
+      .agents/skills/shadcn/registry.md: sha256:4f239be36bd2b58e17047db1ca80ab7da00e15a8b73242e5e4d50d113c4caa05
+      .agents/skills/shadcn/rules/base-vs-radix.md: sha256:2b2deb47d004285220c1fc6b38bb2edc2d0ccbcdafd031b0b189d5d8ed0d1ba8
+      .agents/skills/shadcn/rules/chat.md: sha256:4b4610d487ddc9751f3cfe0c554a06560ac723fcc2460abad77a1d3c7c9a4b95
+      .agents/skills/shadcn/rules/composition.md: sha256:f282df828d83a91132a846ddb62eea149a7c7c94822e9ca88cfddf85af01aa41
+      .agents/skills/shadcn/rules/forms.md: sha256:29593e14381e34626f8e0e9c15c59f3394b92a0623af6a6ec94585400123853c
+      .agents/skills/shadcn/rules/icons.md: sha256:d4a58266648872d9ee07d0c2368843a1cb88b8253b7f528dd7bda9d68b6c2535
+      .agents/skills/shadcn/rules/styling.md: sha256:f88fbd72dff862805b786dc7d7e4c74c83030fc278c5b97c993e4e665001798c
+      .agents/skills/shadcn/scripts/showcase-coverage.mjs: sha256:fb593e0806414d23b51354a46881f0b2873afc226bda0926a22f83cbd60af2fa
+    content_hash: sha256:e976181d1ffe560455eb3c7bd83cec5f111a23b32128c20718fd0db6e071fb2d
+deployments:
+  - kind: project-relative
+    target: antigravity
+    value: .agents/skills/shadcn
+    runtime: null
+    scope: project
+    owners:
+      - shadcn-ui/ui/skills/shadcn
+    active_owner: shadcn-ui/ui/skills/shadcn
+    content_hash: null
+  - kind: project-relative
+    target: antigravity
+    value: .agents/skills/shadcn/SKILL.md
+    runtime: null
+    scope: project
+    owners:
+      - shadcn-ui/ui/skills/shadcn
+    active_owner: shadcn-ui/ui/skills/shadcn
+    content_hash: sha256:93951e5e83f616a3e046491c00d770bd54c0a64164706cd1191822a233d27592
+  - kind: project-relative
+    target: antigravity
+    value: .agents/skills/shadcn/agents/openai.yml
+    runtime: null
+    scope: project
+    owners:
+      - shadcn-ui/ui/skills/shadcn
+    active_owner: shadcn-ui/ui/skills/shadcn
+    content_hash: sha256:35db91b1eef58b2abe01da9b88577de5a44e233b740cd93d692ddeeadd2afe4d
+  - kind: project-relative
+    target: antigravity
+    value: .agents/skills/shadcn/assets/shadcn-small.png
+    runtime: null
+    scope: project
+    owners:
+      - shadcn-ui/ui/skills/shadcn
+    active_owner: shadcn-ui/ui/skills/shadcn
+    content_hash: sha256:0ecc62d682727f68fc4937eed19960c706714fa084d44f63028d611ae02bf3d7
+  - kind: project-relative
+    target: antigravity
+    value: .agents/skills/shadcn/assets/shadcn.png
+    runtime: null
+    scope: project
+    owners:
+      - shadcn-ui/ui/skills/shadcn
+    active_owner: shadcn-ui/ui/skills/shadcn
+    content_hash: sha256:7d60ad6fec4d89a0d44ba5a3c9283d2fea0047af5467f9227040e20d927d39b7
+  - kind: project-relative
+    target: antigravity
+    value: .agents/skills/shadcn/assets/showcase/color-pair.tsx
+    runtime: null
+    scope: project
+    owners:
+      - shadcn-ui/ui/skills/shadcn
+    active_owner: shadcn-ui/ui/skills/shadcn
+    content_hash: sha256:6028f0b677912216822fdaf76ae6b8863c429916ed4a9626b73f4de4506f8ee4
+  - kind: project-relative
+    target: antigravity
+    value: .agents/skills/shadcn/assets/showcase/preview-states.css
+    runtime: null
+    scope: project
+    owners:
+      - shadcn-ui/ui/skills/shadcn
+    active_owner: shadcn-ui/ui/skills/shadcn
+    content_hash: sha256:8d9e3cec24dd01b11c5ba12196d0376a131797d9ad247ea624e66eb8bbf61b0e
+  - kind: project-relative
+    target: antigravity
+    value: .agents/skills/shadcn/assets/showcase/state-matrix.tsx
+    runtime: null
+    scope: project
+    owners:
+      - shadcn-ui/ui/skills/shadcn
+    active_owner: shadcn-ui/ui/skills/shadcn
+    content_hash: sha256:07794119fe05ff735358b3f8ca30a8297617ab64dfb3901dce4d89fe5f443458
+  - kind: project-relative
+    target: antigravity
+    value: .agents/skills/shadcn/cli.md
+    runtime: null
+    scope: project
+    owners:
+      - shadcn-ui/ui/skills/shadcn
+    active_owner: shadcn-ui/ui/skills/shadcn
+    content_hash: sha256:a381e35bf36fe7bb851952c13707e01e82434fd7a4a4e53f6df26c6370838904
+  - kind: project-relative
+    target: antigravity
+    value: .agents/skills/shadcn/customization.md
+    runtime: null
+    scope: project
+    owners:
+      - shadcn-ui/ui/skills/shadcn
+    active_owner: shadcn-ui/ui/skills/shadcn
+    content_hash: sha256:a19e81c78843df255e85755e52659268d793845add845b34ad8091f62bff3af9
+  - kind: project-relative
+    target: antigravity
+    value: .agents/skills/shadcn/design-system-page.md
+    runtime: null
+    scope: project
+    owners:
+      - shadcn-ui/ui/skills/shadcn
+    active_owner: shadcn-ui/ui/skills/shadcn
+    content_hash: sha256:c541d661af159548744be3e27f79e7da710ab83f9afd448a4346f7ff1531d328
+  - kind: project-relative
+    target: antigravity
+    value: .agents/skills/shadcn/design-system.md
+    runtime: null
+    scope: project
+    owners:
+      - shadcn-ui/ui/skills/shadcn
+    active_owner: shadcn-ui/ui/skills/shadcn
+    content_hash: sha256:9ed11e93e7e80e34c8795d5ba82e5420ca905e8e9949fef79cbe9239184fd06b
+  - kind: project-relative
+    target: antigravity
+    value: .agents/skills/shadcn/evals/evals.json
+    runtime: null
+    scope: project
+    owners:
+      - shadcn-ui/ui/skills/shadcn
+    active_owner: shadcn-ui/ui/skills/shadcn
+    content_hash: sha256:e82c747326a5c21e37a1c962274d36b1bfebb3e6602ee368b98e2dba5db18369
+  - kind: project-relative
+    target: antigravity
+    value: .agents/skills/shadcn/mcp.md
+    runtime: null
+    scope: project
+    owners:
+      - shadcn-ui/ui/skills/shadcn
+    active_owner: shadcn-ui/ui/skills/shadcn
+    content_hash: sha256:8d696b4e45b7d0e337367248513bd9acebe8f3bcfd7b748c775e5a337c8f38c8
+  - kind: project-relative
+    target: antigravity
+    value: .agents/skills/shadcn/registry.md
+    runtime: null
+    scope: project
+    owners:
+      - shadcn-ui/ui/skills/shadcn
+    active_owner: shadcn-ui/ui/skills/shadcn
+    content_hash: sha256:4f239be36bd2b58e17047db1ca80ab7da00e15a8b73242e5e4d50d113c4caa05
+  - kind: project-relative
+    target: antigravity
+    value: .agents/skills/shadcn/rules/base-vs-radix.md
+    runtime: null
+    scope: project
+    owners:
+      - shadcn-ui/ui/skills/shadcn
+    active_owner: shadcn-ui/ui/skills/shadcn
+    content_hash: sha256:2b2deb47d004285220c1fc6b38bb2edc2d0ccbcdafd031b0b189d5d8ed0d1ba8
+  - kind: project-relative
+    target: antigravity
+    value: .agents/skills/shadcn/rules/chat.md
+    runtime: null
+    scope: project
+    owners:
+      - shadcn-ui/ui/skills/shadcn
+    active_owner: shadcn-ui/ui/skills/shadcn
+    content_hash: sha256:4b4610d487ddc9751f3cfe0c554a06560ac723fcc2460abad77a1d3c7c9a4b95
+  - kind: project-relative
+    target: antigravity
+    value: .agents/skills/shadcn/rules/composition.md
+    runtime: null
+    scope: project
+    owners:
+      - shadcn-ui/ui/skills/shadcn
+    active_owner: shadcn-ui/ui/skills/shadcn
+    content_hash: sha256:f282df828d83a91132a846ddb62eea149a7c7c94822e9ca88cfddf85af01aa41
+  - kind: project-relative
+    target: antigravity
+    value: .agents/skills/shadcn/rules/forms.md
+    runtime: null
+    scope: project
+    owners:
+      - shadcn-ui/ui/skills/shadcn
+    active_owner: shadcn-ui/ui/skills/shadcn
+    content_hash: sha256:29593e14381e34626f8e0e9c15c59f3394b92a0623af6a6ec94585400123853c
+  - kind: project-relative
+    target: antigravity
+    value: .agents/skills/shadcn/rules/icons.md
+    runtime: null
+    scope: project
+    owners:
+      - shadcn-ui/ui/skills/shadcn
+    active_owner: shadcn-ui/ui/skills/shadcn
+    content_hash: sha256:d4a58266648872d9ee07d0c2368843a1cb88b8253b7f528dd7bda9d68b6c2535
+  - kind: project-relative
+    target: antigravity
+    value: .agents/skills/shadcn/rules/styling.md
+    runtime: null
+    scope: project
+    owners:
+      - shadcn-ui/ui/skills/shadcn
+    active_owner: shadcn-ui/ui/skills/shadcn
+    content_hash: sha256:f88fbd72dff862805b786dc7d7e4c74c83030fc278c5b97c993e4e665001798c
+  - kind: project-relative
+    target: antigravity
+    value: .agents/skills/shadcn/scripts/showcase-coverage.mjs
+    runtime: null
+    scope: project
+    owners:
+      - shadcn-ui/ui/skills/shadcn
+    active_owner: shadcn-ui/ui/skills/shadcn
+    content_hash: sha256:fb593e0806414d23b51354a46881f0b2873afc226bda0926a22f83cbd60af2fa

@@ -5,7 +5,11 @@ import type {
   CleanupPreviewResponse,
   CleanupQueueItem,
   DryRunPreview,
+  PrimitiveKind,
+  PrimitivesSnapshot,
   RemoveTargetScope,
+  SessionDetail,
+  SessionSummary,
   SkillRecord,
 } from "@harness-control/core";
 import type { DaemonClient, DaemonStatus, InventoryResponse } from "@harness-control/server";
@@ -19,18 +23,29 @@ import {
   useTerminalSize,
 } from "@termuijs/jsx";
 
-type ModuleId = "overview" | "skills" | "tokens" | "projects" | "sources" | "daemon" | "cleanup";
+type ModuleId =
+  | "overview"
+  | "skills"
+  | "sessions"
+  | "primitives"
+  | "tokens"
+  | "projects"
+  | "sources"
+  | "cleanup"
+  | "daemon";
 type FilterMode = "all" | "broken" | "drift" | "updates";
 type SortMode = "name" | "desc" | "full" | "projects";
 
-const MODULES: readonly { id: ModuleId; key: string; label: string }[] = [
-  { id: "overview", key: "1", label: "Overview" },
-  { id: "skills", key: "2", label: "Skills" },
-  { id: "tokens", key: "3", label: "Tokens" },
-  { id: "projects", key: "4", label: "Projects" },
-  { id: "sources", key: "5", label: "Sources" },
-  { id: "daemon", key: "6", label: "Daemon" },
-  { id: "cleanup", key: "7", label: "Cleanup" },
+const MODULES: readonly { id: ModuleId; key: string; label: string; group: string }[] = [
+  { id: "overview", key: "1", label: "Overview", group: "MONITOR" },
+  { id: "sessions", key: "2", label: "Sessions", group: "MONITOR" },
+  { id: "tokens", key: "3", label: "Tokens", group: "MONITOR" },
+  { id: "skills", key: "4", label: "Skills", group: "PRIMITIVES" },
+  { id: "primitives", key: "5", label: "Primitives", group: "PRIMITIVES" },
+  { id: "cleanup", key: "6", label: "Cleanup", group: "MAINTAIN" },
+  { id: "projects", key: "7", label: "Projects", group: "MAINTAIN" },
+  { id: "sources", key: "8", label: "Sources", group: "MAINTAIN" },
+  { id: "daemon", key: "9", label: "Daemon", group: "MAINTAIN" },
 ];
 
 const SORT_CYCLE: readonly SortMode[] = ["name", "desc", "full", "projects"];
@@ -118,14 +133,28 @@ function HarnessManagerTui({ client, initialData, initialStatus }: TuiProps) {
     execute: () => Promise<ActionResult>;
   } | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<readonly SessionSummary[]>([]);
+  const [sessionIdx, setSessionIdx] = useState(0);
+  const [selectedSessionDetail, setSelectedSessionDetail] = useState<SessionDetail | null>(null);
+  const [primitives, setPrimitives] = useState<PrimitivesSnapshot | null>(null);
+  const [primitiveKind, setPrimitiveKind] = useState<Exclude<PrimitiveKind, "skill">>("mcp");
+  const [primitiveIdx, setPrimitiveIdx] = useState(0);
+  const [skillMenuOpen, setSkillMenuOpen] = useState(false);
 
   const load = useCallback(
     async (refresh = false) => {
       try {
         setError(null);
-        const [res, status] = await Promise.all([client.getInventory(refresh), client.getStatus()]);
+        const [res, status, prims, sess] = await Promise.all([
+          client.getInventory(refresh),
+          client.getStatus(),
+          client.getPrimitives().catch(() => null),
+          client.getSessions().catch(() => ({ sessions: [] as SessionSummary[], total: 0 })),
+        ]);
         setData(res);
         setDaemonStatus(status);
+        if (prims) setPrimitives(prims);
+        setSessions(sess.sessions);
       } catch (err) {
         setDaemonStatus(null);
         setError(err instanceof Error ? err.message : String(err));
@@ -238,16 +267,63 @@ function HarnessManagerTui({ client, initialData, initialStatus }: TuiProps) {
       : [
           { key: "q", action: () => process.exit(0) },
           { key: "c", ctrl: true, action: () => process.exit(0) },
+          {
+            key: "escape",
+            action: () => {
+              setSkillMenuOpen(false);
+              setSelectedSessionDetail(null);
+            },
+          },
           { key: "1", action: () => setActiveModule("overview") },
-          { key: "2", action: () => setActiveModule("skills") },
+          { key: "2", action: () => setActiveModule("sessions") },
           { key: "3", action: () => setActiveModule("tokens") },
-          { key: "4", action: () => setActiveModule("projects") },
-          { key: "5", action: () => setActiveModule("sources") },
-          { key: "6", action: () => setActiveModule("daemon") },
-          { key: "7", action: () => setActiveModule("cleanup") },
+          { key: "4", action: () => setActiveModule("skills") },
+          { key: "5", action: () => setActiveModule("primitives") },
+          { key: "6", action: () => setActiveModule("cleanup") },
+          { key: "7", action: () => setActiveModule("projects") },
+          { key: "8", action: () => setActiveModule("sources") },
+          { key: "9", action: () => setActiveModule("daemon") },
           { key: "tab", action: () => cycleModule(1) },
           { key: "right", action: () => cycleModule(1) },
           { key: "left", action: () => cycleModule(-1) },
+          {
+            key: "return",
+            action: () => {
+              if (activeModule === "skills" && skills[selectedIdx]) {
+                setSkillMenuOpen((v) => !v);
+              } else if (activeModule === "sessions") {
+                if (selectedSessionDetail) {
+                  setSelectedSessionDetail(null);
+                  return;
+                }
+                const s = sessions[sessionIdx];
+                if (!s) return;
+                setStatusMessage("Loading session...");
+                void client
+                  .getSessionDetail(s.transcriptPath, s.harnessId)
+                  .then((d) => {
+                    setSelectedSessionDetail(d);
+                    setStatusMessage(null);
+                  })
+                  .catch(() => setStatusMessage("Failed to load session detail."));
+              }
+            },
+          },
+          {
+            key: "p",
+            action: () => {
+              if (activeModule !== "primitives") return;
+              const kinds: readonly Exclude<PrimitiveKind, "skill">[] = [
+                "mcp",
+                "hook",
+                "command",
+                "lsp",
+                "prompt",
+              ];
+              setPrimitiveKind((cur) => kinds[(kinds.indexOf(cur) + 1) % kinds.length] ?? "mcp");
+              setPrimitiveIdx(0);
+            },
+          },
           {
             key: "r",
             action: () => {
@@ -361,6 +437,20 @@ function HarnessManagerTui({ client, initialData, initialStatus }: TuiProps) {
             action: () => {
               if (activeModule === "cleanup") {
                 setCleanupIdx((i) => Math.min(Math.max(cleanupCandidates.length - 1, 0), i + 1));
+              } else if (activeModule === "sessions") {
+                setSessionIdx((i) => Math.min(Math.max(sessions.length - 1, 0), i + 1));
+              } else if (activeModule === "primitives") {
+                const count =
+                  primitiveKind === "mcp"
+                    ? (primitives?.mcpServers.length ?? 0)
+                    : primitiveKind === "hook"
+                      ? (primitives?.hooks.length ?? 0)
+                      : primitiveKind === "command"
+                        ? (primitives?.commands.length ?? 0)
+                        : primitiveKind === "lsp"
+                          ? (primitives?.lsps.length ?? 0)
+                          : (primitives?.prompts.length ?? 0);
+                setPrimitiveIdx((i) => Math.min(Math.max(count - 1, 0), i + 1));
               } else {
                 setSelectedIdx((i) => Math.min(Math.max(skills.length - 1, 0), i + 1));
               }
@@ -371,6 +461,8 @@ function HarnessManagerTui({ client, initialData, initialStatus }: TuiProps) {
             action: () => {
               if (activeModule === "cleanup") {
                 setCleanupIdx((i) => Math.min(Math.max(cleanupCandidates.length - 1, 0), i + 1));
+              } else if (activeModule === "sessions") {
+                setSessionIdx((i) => Math.min(Math.max(sessions.length - 1, 0), i + 1));
               } else {
                 setSelectedIdx((i) => Math.min(Math.max(skills.length - 1, 0), i + 1));
               }
@@ -381,6 +473,10 @@ function HarnessManagerTui({ client, initialData, initialStatus }: TuiProps) {
             action: () => {
               if (activeModule === "cleanup") {
                 setCleanupIdx((i) => Math.max(0, i - 1));
+              } else if (activeModule === "sessions") {
+                setSessionIdx((i) => Math.max(0, i - 1));
+              } else if (activeModule === "primitives") {
+                setPrimitiveIdx((i) => Math.max(0, i - 1));
               } else {
                 setSelectedIdx((i) => Math.max(0, i - 1));
               }
@@ -391,6 +487,8 @@ function HarnessManagerTui({ client, initialData, initialStatus }: TuiProps) {
             action: () => {
               if (activeModule === "cleanup") {
                 setCleanupIdx((i) => Math.max(0, i - 1));
+              } else if (activeModule === "sessions") {
+                setSessionIdx((i) => Math.max(0, i - 1));
               } else {
                 setSelectedIdx((i) => Math.max(0, i - 1));
               }
@@ -529,28 +627,43 @@ function HarnessManagerTui({ client, initialData, initialStatus }: TuiProps) {
           height="100%"
           flexDirection="column"
         >
-          <text bold color="cyan">
-            {" "}
-            MODULES
-          </text>
-          {MODULES.map((m) => {
-            const isActive = activeModule === m.id;
-            return (
-              <text key={m.id} color={isActive ? "cyan" : "white"} bold={isActive}>
-                {isActive ? " ▸ " : "   "}[{m.key}] {m.label}
+          {(["MONITOR", "PRIMITIVES", "MAINTAIN"] as const).map((group) => (
+            <box key={group} flexDirection="column">
+              <text bold dim>
+                {" "}
+                {group}
               </text>
-            );
-          })}
+              {MODULES.filter((m) => m.group === group).map((m) => {
+                const isActive = activeModule === m.id;
+                return (
+                  <text key={m.id} color={isActive ? "cyan" : "white"} bold={isActive}>
+                    {isActive ? " ▸ " : "   "}[{m.key}] {m.label}
+                  </text>
+                );
+              })}
+            </box>
+          ))}
           <divider />
           <text bold dim>
             {" "}
             PRIMITIVES
           </text>
-          <text color="green"> ● Skills (active)</text>
-          <text dim> ○ MCPs (soon)</text>
-          <text dim> ○ Hooks (soon)</text>
-          <text dim> ○ Commands (soon)</text>
-          <text dim> ○ LSPs (soon)</text>
+          <text color="green">{` ● Skills (${data.snapshot.skills.length})`}</text>
+          <text color={primitives && primitives.mcpServers.length > 0 ? "cyan" : "gray"}>
+            {` ○ MCPs (${primitives?.mcpServers.length ?? 0})`}
+          </text>
+          <text color={primitives && primitives.hooks.length > 0 ? "cyan" : "gray"}>
+            {` ○ Hooks (${primitives?.hooks.length ?? 0})`}
+          </text>
+          <text color={primitives && primitives.commands.length > 0 ? "cyan" : "gray"}>
+            {` ○ Commands (${primitives?.commands.length ?? 0})`}
+          </text>
+          <text color={primitives && primitives.lsps.length > 0 ? "cyan" : "gray"}>
+            {` ○ LSPs (${primitives?.lsps.length ?? 0})`}
+          </text>
+          <text color={primitives && primitives.prompts.length > 0 ? "cyan" : "gray"}>
+            {` ○ Prompts (${primitives?.prompts.length ?? 0})`}
+          </text>
           <divider />
           <text bold dim>
             {" "}
@@ -947,6 +1060,120 @@ function HarnessManagerTui({ client, initialData, initialStatus }: TuiProps) {
             </box>
           )}
 
+          {activeModule === "sessions" && (
+            <box
+              border="round"
+              borderColor="brightBlack"
+              flexDirection="column"
+              flexGrow={1}
+              width="100%"
+              padding={1}
+            >
+              {selectedSessionDetail ? (
+                <box flexDirection="column" gap={1}>
+                  <text bold color="cyan">
+                    {` ${selectedSessionDetail.title} (${selectedSessionDetail.harnessId})`}
+                  </text>
+                  <text dim>
+                    {` ${selectedSessionDetail.promptCount} prompts · ${selectedSessionDetail.totalTokens.toLocaleString()} tokens · $${selectedSessionDetail.estimatedCostUsd.toFixed(4)} · [Esc] Back`}
+                  </text>
+                  <text dim>{` Path: ${selectedSessionDetail.transcriptPath}`}</text>
+                  <divider />
+                  {selectedSessionDetail.messages.slice(-8).map((m, idx) => (
+                    <box key={idx} flexDirection="column">
+                      <text bold color={m.role === "user" ? "cyan" : "green"}>
+                        {` ${m.role === "user" ? "You" : "Assistant"}:`}
+                      </text>
+                      <text>{`   ${m.content.replace(/\s+/g, " ").slice(0, 120)}`}</text>
+                    </box>
+                  ))}
+                </box>
+              ) : (
+                <box flexDirection="column">
+                  <text bold color="cyan">
+                    {` Sessions — ${sessions.length} transcripts`}
+                  </text>
+                  <divider />
+                  {sessions.length === 0 ? (
+                    <text dim> No sessions discovered.</text>
+                  ) : (
+                    sessions.slice(0, pageSize).map((s, idx) => {
+                      const isActive = idx === sessionIdx;
+                      return (
+                        <text key={s.id} bold={isActive} color={isActive ? "cyan" : "white"}>
+                          {`${isActive ? ">" : " "} [${s.harnessId.slice(0, 10).padEnd(10)}] ${s.title.slice(0, 42).padEnd(42)} ${(s.model ?? "-").slice(0, 20).padEnd(20)} ${s.id.slice(0, 8)}`}
+                        </text>
+                      );
+                    })
+                  )}
+                </box>
+              )}
+            </box>
+          )}
+
+          {activeModule === "primitives" && (
+            <box
+              border="round"
+              borderColor="brightBlack"
+              flexDirection="column"
+              flexGrow={1}
+              width="100%"
+              padding={1}
+            >
+              <text bold color="cyan">
+                {` Primitives — ${primitiveKind.toUpperCase()} ([p] switch kind)`}
+              </text>
+              <divider />
+              {!primitives ? (
+                <text dim> Loading primitives...</text>
+              ) : (
+                (() => {
+                  const list =
+                    primitiveKind === "mcp"
+                      ? primitives.mcpServers.map((m) => ({
+                          id: `${m.name}:${m.transport}`,
+                          name: m.name,
+                          detail: m.commandOrUrl,
+                          harness: m.harnesses.join(","),
+                        }))
+                      : (primitiveKind === "hook"
+                          ? primitives.hooks
+                          : primitiveKind === "command"
+                            ? primitives.commands
+                            : primitiveKind === "lsp"
+                              ? primitives.lsps
+                              : primitives.prompts
+                        ).map((entry) => ({
+                          id: entry.id,
+                          name: entry.name,
+                          detail: entry.detail ?? entry.path,
+                          harness: entry.harnessId,
+                        }));
+                  if (list.length === 0) {
+                    return <text dim> No {primitiveKind} entries found.</text>;
+                  }
+                  return list.slice(0, pageSize).map((item, idx) => {
+                    const isActive = idx === primitiveIdx;
+                    return (
+                      <text key={item.id} bold={isActive} color={isActive ? "cyan" : "white"}>
+                        {`${isActive ? ">" : " "} [${item.harness.slice(0, 10).padEnd(10)}] ${item.name.slice(0, 26).padEnd(26)} ${item.detail.slice(0, 48)}`}
+                      </text>
+                    );
+                  });
+                })()
+              )}
+            </box>
+          )}
+
+          {skillMenuOpen && activeModule === "skills" && skills[selectedIdx] && (
+            <box border="round" borderColor="cyan" flexDirection="column" padding={1} width="100%">
+              <text bold color="cyan">
+                {` Actions for ${skills[selectedIdx]?.name} ([Esc] close)`}
+              </text>
+              <text> [U] Upgrade via package manager [m] Migrate to APM [x] Remove (dry-run)</text>
+            </box>
+          )}
+
           {pendingPreview && (
             <PreviewModal
               preview={pendingPreview.preview}
@@ -971,12 +1198,16 @@ function HarnessManagerTui({ client, initialData, initialStatus }: TuiProps) {
       <box height={1} width="100%">
         <text dim>
           {" "}
-          [1-7/Tab] Switch Module [r] Rescan [q] Quit
+          [1-9/Tab] Switch Module [r] Rescan [q] Quit
           {activeModule === "skills"
-            ? "  |  [j/k] Navigate  [b/d/u/c] Filter  [s] Sort  [x/U/m] Actions"
-            : activeModule === "cleanup"
-              ? "  |  [j/k] Navigate  [space] Toggle  [a] Action  [s] Scope  [x] Execute"
-              : ""}
+            ? "  |  [j/k] Navigate  [Enter] Actions  [b/d/u/c] Filter  [s] Sort"
+            : activeModule === "sessions"
+              ? "  |  [j/k] Navigate  [Enter] Inspect  [Esc] Back"
+              : activeModule === "primitives"
+                ? "  |  [j/k] Navigate  [p] Switch Kind"
+                : activeModule === "cleanup"
+                  ? "  |  [j/k] Navigate  [space] Toggle  [a] Action  [s] Scope  [x] Execute"
+                  : ""}
         </text>
       </box>
     </col>

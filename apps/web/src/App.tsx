@@ -23,6 +23,7 @@ import type {
   InventoryResponse,
   SkillContentResponse,
 } from "@harness-control/server";
+import { ActionMenu } from "./components/ui/action-menu";
 import {
   AlertTriangle,
   ArrowDown,
@@ -162,7 +163,7 @@ const PRIMITIVE_NAV: readonly { id: PrimitiveKind; label: string; enabled: boole
 
 const VIEW_TITLES: Record<ViewId, string> = {
   home: "Home",
-  inventory: "Library",
+  inventory: "Skills",
   cleanup: "Cleanup",
   discover: "Discover",
   tokens: "Token Usage",
@@ -170,6 +171,18 @@ const VIEW_TITLES: Record<ViewId, string> = {
   sources: "Sources & Catalog",
   sessions: "Sessions",
   primitives: "Primitives",
+};
+
+const VIEW_SUBTITLES: Record<ViewId, string> = {
+  home: "Workspace overview and quick health actions",
+  inventory: "Installed skills across global and project harnesses",
+  cleanup: "Broken symlinks, duplicates, and redundant copies",
+  discover: "Search and install skills via native package managers",
+  tokens: "Context footprint, active usage, and model cost",
+  projects: "Project workspaces and cross-harness drift",
+  sources: "Upstream repositories, authors, and update channels",
+  sessions: "Recent transcripts, token usage, and conversation history",
+  primitives: "MCP servers, hooks, commands, LSPs, and prompts",
 };
 
 function SortIcon({ direction }: { readonly direction?: SortDirection | undefined }) {
@@ -281,8 +294,9 @@ export function App() {
   const [search, setSearch] = useState("");
   const [harnessSearch, setHarnessSearch] = useState("");
   const [collapsedSidebarSections, setCollapsedSidebarSections] = useState<
-    Set<"views" | "primitives" | "harnesses">
+    Set<"monitor" | "primitives" | "maintain" | "harnesses">
   >(() => new Set());
+  const [showEmptyHarnesses, setShowEmptyHarnesses] = useState(false);
   const [harnessFilter, setHarnessFilter] = useState<HarnessId | "all">("all");
   const [scopeFilter, setScopeFilter] = useState<"all" | "global" | "project">("all");
   const [authorFilter, setAuthorFilter] = useState<string>("all");
@@ -816,7 +830,7 @@ export function App() {
     setPreviewModal({ preview, execute: () => client.executeMigrateToApm(req) });
   };
 
-  const toggleSidebarSection = (section: "views" | "primitives" | "harnesses") => {
+  const toggleSidebarSection = (section: "monitor" | "primitives" | "maintain" | "harnesses") => {
     setCollapsedSidebarSections((prev) => {
       const next = new Set(prev);
       if (next.has(section)) next.delete(section);
@@ -1181,34 +1195,23 @@ export function App() {
           </button>
         </div>
 
-        <nav aria-label="Dashboard views">
+        <nav aria-label="Monitor views">
           <button
             type="button"
             className="nav-group-toggle"
-            aria-expanded={!collapsedSidebarSections.has("views")}
-            onClick={() => toggleSidebarSection("views")}
+            aria-expanded={!collapsedSidebarSections.has("monitor")}
+            onClick={() => toggleSidebarSection("monitor")}
           >
-            <span>Views</span>
-            {collapsedSidebarSections.has("views") ? (
+            <span>Monitor</span>
+            {collapsedSidebarSections.has("monitor") ? (
               <ChevronRight size={12} aria-hidden="true" />
             ) : (
               <ChevronDown size={12} aria-hidden="true" />
             )}
           </button>
-          {!collapsedSidebarSections.has("views") && (
+          {!collapsedSidebarSections.has("monitor") && (
             <ul className="nav-list">
-              {(
-                [
-                  "home",
-                  "inventory",
-                  "cleanup",
-                  "sessions",
-                  "discover",
-                  "tokens",
-                  "projects",
-                  "sources",
-                ] as const
-              ).map((id) => {
+              {(["home", "sessions", "tokens"] as const).map((id) => {
                 const Icon = VIEW_ICONS[id];
                 return (
                   <li key={id}>
@@ -1222,12 +1225,6 @@ export function App() {
                         <Icon size={13} aria-hidden="true" />
                         <span>{VIEW_TITLES[id]}</span>
                       </span>
-                      {id === "inventory" && data && (
-                        <span className="count-pill">{data.snapshot.skills.length}</span>
-                      )}
-                      {id === "cleanup" && cleanupCandidates.length > 0 && (
-                        <span className="count-pill">{cleanupCandidates.length}</span>
-                      )}
                     </button>
                   </li>
                 );
@@ -1261,7 +1258,7 @@ export function App() {
                     <button
                       type="button"
                       className="nav-btn"
-                      aria-current={isActive ? "true" : undefined}
+                      aria-current={isActive ? "page" : undefined}
                       onClick={() => {
                         if (p.id === "skill") {
                           setView("inventory");
@@ -1272,6 +1269,9 @@ export function App() {
                       }}
                     >
                       <span>{p.label}</span>
+                      {p.id === "skill" && data && (
+                        <span className="count-pill">{data.snapshot.skills.length}</span>
+                      )}
                       {p.id !== "skill" && primitivesData && (
                         <span className="count-pill">
                           {p.id === "mcp"
@@ -1293,7 +1293,48 @@ export function App() {
           )}
         </nav>
 
-        {data && (
+        <nav aria-label="Maintenance views">
+          <button
+            type="button"
+            className="nav-group-toggle"
+            aria-expanded={!collapsedSidebarSections.has("maintain")}
+            onClick={() => toggleSidebarSection("maintain")}
+          >
+            <span>Maintain</span>
+            {collapsedSidebarSections.has("maintain") ? (
+              <ChevronRight size={12} aria-hidden="true" />
+            ) : (
+              <ChevronDown size={12} aria-hidden="true" />
+            )}
+          </button>
+          {!collapsedSidebarSections.has("maintain") && (
+            <ul className="nav-list">
+              {(["cleanup", "projects", "discover", "sources"] as const).map((id) => {
+                const Icon = VIEW_ICONS[id];
+                return (
+                  <li key={id}>
+                    <button
+                      type="button"
+                      className="nav-btn"
+                      aria-current={view === id ? "page" : undefined}
+                      onClick={() => setView(id)}
+                    >
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
+                        <Icon size={13} aria-hidden="true" />
+                        <span>{VIEW_TITLES[id]}</span>
+                      </span>
+                      {id === "cleanup" && cleanupCandidates.length > 0 && (
+                        <span className="count-pill">{cleanupCandidates.length}</span>
+                      )}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </nav>
+
+        {data && (view === "inventory" || view === "primitives" || view === "projects") && (
           <nav className="harness-sidebar-nav" aria-label="Global harnesses">
             <button
               type="button"
@@ -1341,11 +1382,14 @@ export function App() {
                   )}
                   {data.harnesses
                     .filter((h) => {
+                      const count = harnessCounts.get(h.id) ?? 0;
                       const q = harnessSearch.trim().toLowerCase();
-                      if (!q) return true;
-                      return (
-                        h.displayName.toLowerCase().includes(q) || h.id.toLowerCase().includes(q)
-                      );
+                      if (q) {
+                        return (
+                          h.displayName.toLowerCase().includes(q) || h.id.toLowerCase().includes(q)
+                        );
+                      }
+                      return showEmptyHarnesses || count > 0 || harnessFilter === h.id;
                     })
                     .map((h) => {
                       const count = harnessCounts.get(h.id) ?? 0;
@@ -1371,6 +1415,17 @@ export function App() {
                       );
                     })}
                 </ul>
+                {!harnessSearch.trim() && (
+                  <button
+                    type="button"
+                    className="mt-1 w-full rounded px-2 py-1 text-left text-[11px] text-[var(--muted)] hover:bg-[var(--panel-hover)] hover:text-[var(--fg)] cursor-pointer"
+                    onClick={() => setShowEmptyHarnesses((v) => !v)}
+                  >
+                    {showEmptyHarnesses
+                      ? "Hide empty harnesses"
+                      : `Show all ${data.harnesses.length} harnesses`}
+                  </button>
+                )}
               </>
             )}
           </nav>
@@ -1410,51 +1465,57 @@ export function App() {
               {VIEW_TITLES[view]}
               {view === "inventory" && harnessFilter !== "all" ? ` / ${harnessFilter}` : ""}
             </h1>
-            {data && (
-              <span className="mono" style={{ color: "var(--muted)" }}>
-                {data.snapshot.harnessesScanned.length} harnesses · {filteredSkills.length} matching
-              </span>
-            )}
+            <span className="text-[12.5px] text-[var(--muted)]">
+              {view === "inventory" && data
+                ? `${data.snapshot.harnessesScanned.length} harnesses · ${filteredSkills.length} matching`
+                : VIEW_SUBTITLES[view]}
+            </span>
           </div>
           <div className="toolbar">
-            <div className="chip-group" role="group" aria-label="Layout mode">
+            {view === "inventory" && (
+              <div className="chip-group" role="group" aria-label="Layout mode">
+                <button
+                  type="button"
+                  className={`btn ${layoutMode === "list" ? "active-chip" : ""}`}
+                  aria-pressed={layoutMode === "list"}
+                  onClick={() => setLayoutMode("list")}
+                >
+                  <ListIcon size={12} aria-hidden="true" />
+                  <span>List</span>
+                </button>
+                <button
+                  type="button"
+                  className={`btn ${layoutMode === "cards" ? "active-chip" : ""}`}
+                  aria-pressed={layoutMode === "cards"}
+                  onClick={() => setLayoutMode("cards")}
+                >
+                  <LayoutGrid size={12} aria-hidden="true" />
+                  <span>Cards</span>
+                </button>
+              </div>
+            )}
+            {(view === "home" || view === "inventory") && cleanupCandidates.length > 0 && (
               <button
                 type="button"
-                className={`btn ${layoutMode === "list" ? "active-chip" : ""}`}
-                aria-pressed={layoutMode === "list"}
-                onClick={() => setLayoutMode("list")}
+                className="btn"
+                disabled={!data || loading}
+                onClick={() => setView("cleanup")}
               >
-                <ListIcon size={12} aria-hidden="true" />
-                <span>List</span>
+                <Sparkles size={13} aria-hidden="true" />
+                <span>Cleanup ({cleanupCandidates.length})</span>
               </button>
+            )}
+            {(view === "home" || view === "inventory" || view === "cleanup") && (
               <button
                 type="button"
-                className={`btn ${layoutMode === "cards" ? "active-chip" : ""}`}
-                aria-pressed={layoutMode === "cards"}
-                onClick={() => setLayoutMode("cards")}
+                className="btn"
+                disabled={!data || loading}
+                onClick={() => void openUpgradePreview("all")}
               >
-                <LayoutGrid size={12} aria-hidden="true" />
-                <span>Cards</span>
+                <ArrowUpCircle size={13} aria-hidden="true" />
+                <span>Upgrade All</span>
               </button>
-            </div>
-            <button
-              type="button"
-              className={`btn ${view === "cleanup" ? "active-chip" : ""}`}
-              disabled={!data || loading}
-              onClick={() => setView("cleanup")}
-            >
-              <Sparkles size={13} aria-hidden="true" />
-              <span>Cleanup</span>
-            </button>
-            <button
-              type="button"
-              className="btn"
-              disabled={!data || loading}
-              onClick={() => void openUpgradePreview("all")}
-            >
-              <ArrowUpCircle size={13} aria-hidden="true" />
-              <span>Upgrade All</span>
-            </button>
+            )}
             <button
               type="button"
               className="btn primary"
@@ -1462,7 +1523,13 @@ export function App() {
               onClick={() => void load(true)}
             >
               <RefreshCw size={13} aria-hidden="true" />
-              <span>{loading ? "Scanning..." : "Rescan"}</span>
+              <span>
+                {loading
+                  ? "Scanning..."
+                  : view === "sessions" || view === "tokens"
+                    ? "Refresh"
+                    : "Rescan"}
+              </span>
             </button>
           </div>
         </header>
@@ -2027,24 +2094,25 @@ export function App() {
                           <span className="badge">{groupItems.length} skills</span>
                         </button>
                         {groupBy === "source" && (
-                          <div className="toolbar">
-                            <button
-                              type="button"
-                              className="btn"
-                              onClick={() => void openUpgradePreview("author", groupKey)}
-                            >
-                              <ArrowUpCircle size={12} aria-hidden="true" />
-                              <span>Upgrade</span>
-                            </button>
-                            <button
-                              type="button"
-                              className="btn danger"
-                              onClick={() => void openRemoveSourcePreview(groupKey)}
-                            >
-                              <Trash2 size={12} aria-hidden="true" />
-                              <span>Remove</span>
-                            </button>
-                          </div>
+                          <ActionMenu
+                            label={`Actions for source ${groupKey}`}
+                            items={[
+                              {
+                                id: "upgrade-source",
+                                label: "Upgrade source",
+                                icon: <ArrowUpCircle size={13} />,
+                                onSelect: () => void openUpgradePreview("author", groupKey),
+                              },
+                              {
+                                id: "remove-source",
+                                label: "Remove source",
+                                icon: <Trash2 size={13} />,
+                                tone: "danger",
+                                separatorBefore: true,
+                                onSelect: () => void openRemoveSourcePreview(groupKey),
+                              },
+                            ]}
+                          />
                         )}
                       </div>
                       {!isCollapsed && (
@@ -2291,37 +2359,42 @@ export function App() {
                           <td className="mono num">{skill.tokens.descriptionTokens}</td>
                           <td className="mono num">{skill.tokens.fullTokens}</td>
                           <td className="mono num">{skill.projectCount}</td>
-                          <td onClick={(e) => e.stopPropagation()}>
-                            <div className="toolbar" style={{ flexWrap: "nowrap" }}>
-                              <button
-                                type="button"
-                                className="btn"
-                                aria-label={`Upgrade ${skill.name}`}
-                                onClick={() => void openUpgradePreview("skill", skill.id)}
-                              >
-                                <ArrowUpCircle size={12} aria-hidden="true" />
-                                <span>Upgrade</span>
-                              </button>
-                              {skill.provenance.owningManager !== "apm" && (
-                                <button
-                                  type="button"
-                                  className="btn"
-                                  aria-label={`Migrate ${skill.name} to APM`}
-                                  onClick={() => void openMigratePreview([skill.id])}
-                                >
-                                  <span>To APM</span>
-                                </button>
-                              )}
-                              <button
-                                type="button"
-                                className="btn danger"
-                                aria-label={`Remove ${skill.name}`}
-                                onClick={() => void openRemovePreview(skill)}
-                              >
-                                <Trash2 size={12} aria-hidden="true" />
-                                <span>Remove</span>
-                              </button>
-                            </div>
+                          <td onClick={(e) => e.stopPropagation()} style={{ textAlign: "right" }}>
+                            <ActionMenu
+                              label={`Actions for ${skill.name}`}
+                              items={[
+                                {
+                                  id: "inspect",
+                                  label: "Inspect details",
+                                  icon: <FileText size={13} />,
+                                  onSelect: () => setSelectedSkillId(skill.id),
+                                },
+                                {
+                                  id: "upgrade",
+                                  label: "Upgrade",
+                                  icon: <ArrowUpCircle size={13} />,
+                                  onSelect: () => void openUpgradePreview("skill", skill.id),
+                                },
+                                ...(skill.provenance.owningManager !== "apm"
+                                  ? [
+                                      {
+                                        id: "migrate",
+                                        label: "Migrate to APM",
+                                        icon: <Boxes size={13} />,
+                                        onSelect: () => void openMigratePreview([skill.id]),
+                                      },
+                                    ]
+                                  : []),
+                                {
+                                  id: "remove",
+                                  label: "Remove",
+                                  icon: <Trash2 size={13} />,
+                                  tone: "danger" as const,
+                                  separatorBefore: true,
+                                  onSelect: () => void openRemovePreview(skill),
+                                },
+                              ]}
+                            />
                           </td>
                         </tr>
                       );
@@ -2540,27 +2613,29 @@ export function App() {
                                           </>
                                         )}
                                       </span>
-                                      <div className="toolbar">
-                                        <button
-                                          type="button"
-                                          className="btn"
-                                          style={{ padding: "2px 8px", fontSize: 11 }}
-                                          onClick={() => setSelectedSkillId(sibId)}
-                                        >
-                                          Inspect
-                                        </button>
-                                        {sibling && (
-                                          <button
-                                            type="button"
-                                            className="btn danger"
-                                            style={{ padding: "2px 8px", fontSize: 11 }}
-                                            onClick={() => void openRemovePreview(sibling)}
-                                          >
-                                            <Trash2 size={11} aria-hidden="true" />
-                                            <span>Remove</span>
-                                          </button>
-                                        )}
-                                      </div>
+                                      <ActionMenu
+                                        label={`Actions for ${sibId}`}
+                                        items={[
+                                          {
+                                            id: "inspect",
+                                            label: "Inspect skill",
+                                            icon: <FileText size={13} />,
+                                            onSelect: () => setSelectedSkillId(sibId),
+                                          },
+                                          ...(sibling
+                                            ? [
+                                                {
+                                                  id: "remove",
+                                                  label: "Remove copy",
+                                                  icon: <Trash2 size={13} />,
+                                                  tone: "danger" as const,
+                                                  separatorBefore: true,
+                                                  onSelect: () => void openRemovePreview(sibling),
+                                                },
+                                              ]
+                                            : []),
+                                        ]}
+                                      />
                                     </div>
                                   );
                                 })}
@@ -3504,27 +3579,6 @@ export function App() {
                               </div>
                             </div>
                             <div className="session-row-meta" onClick={(e) => e.stopPropagation()}>
-                              <button
-                                type="button"
-                                className="icon-ghost-btn"
-                                title={`Copy session ID: ${s.id}`}
-                                aria-label={`Copy session ID ${s.id}`}
-                                onClick={() => {
-                                  void navigator.clipboard.writeText(s.id);
-                                  setBanner(`Copied session ID: ${s.id}`);
-                                }}
-                              >
-                                <Copy size={13} aria-hidden="true" />
-                              </button>
-                              <button
-                                type="button"
-                                className="icon-ghost-btn"
-                                title={`Open in Finder: ${s.transcriptPath}`}
-                                aria-label={`Open in Finder: ${s.transcriptPath}`}
-                                onClick={() => void client.revealPath(s.transcriptPath)}
-                              >
-                                <FolderOpen size={13} aria-hidden="true" />
-                              </button>
                               <span
                                 className="mono"
                                 style={{ color: "var(--muted)", minWidth: 74, textAlign: "right" }}
@@ -3532,6 +3586,48 @@ export function App() {
                               >
                                 {formatRelativeTime(s.updatedAt)}
                               </span>
+                              <ActionMenu
+                                label={`Actions for ${s.title}`}
+                                items={[
+                                  {
+                                    id: "open",
+                                    label: "Open conversation",
+                                    icon: <FileText size={13} />,
+                                    onSelect: () => {
+                                      setSessionDetailLoading(true);
+                                      void client
+                                        .getSessionDetail(s.transcriptPath, s.harnessId)
+                                        .then(setSelectedSessionDetail)
+                                        .finally(() => setSessionDetailLoading(false));
+                                    },
+                                  },
+                                  {
+                                    id: "copy-id",
+                                    label: "Copy session ID",
+                                    icon: <Copy size={13} />,
+                                    onSelect: () => {
+                                      void navigator.clipboard.writeText(s.id);
+                                      setBanner(`Copied session ID: ${s.id}`);
+                                    },
+                                  },
+                                  {
+                                    id: "copy-path",
+                                    label: "Copy transcript path",
+                                    icon: <Copy size={13} />,
+                                    onSelect: () => {
+                                      void navigator.clipboard.writeText(s.transcriptPath);
+                                      setBanner("Copied transcript path.");
+                                    },
+                                  },
+                                  {
+                                    id: "reveal",
+                                    label: "Open in Finder",
+                                    icon: <FolderOpen size={13} />,
+                                    separatorBefore: true,
+                                    onSelect: () => void client.revealPath(s.transcriptPath),
+                                  },
+                                ]}
+                              />
                             </div>
                           </div>
                         ))}
