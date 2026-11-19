@@ -26,7 +26,6 @@ import type {
   SkillContentResponse,
 } from "@harness-control/server";
 import { ActionMenu } from "./components/ui/action-menu";
-import { ModalDialog } from "./components/ui/modal-dialog";
 import {
   AlertTriangle,
   ArrowDown,
@@ -66,12 +65,14 @@ import {
   Sparkles,
   Sun,
   Trash2,
-  X,
 } from "lucide-react";
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { HarnessIcon } from "./HarnessIcon.js";
-import { MarkdownViewer } from "./MarkdownViewer.js";
 import { SourceIcon } from "./SourceIcon.js";
+
+const MarkdownViewer = lazy(() =>
+  import("./MarkdownViewer.js").then((m) => ({ default: m.MarkdownViewer })),
+);
 
 type ViewId =
   | "home"
@@ -402,7 +403,6 @@ export function App() {
 
   const dialogRef = useRef<HTMLDialogElement>(null);
   const installDialogRef = useRef<HTMLDialogElement>(null);
-  const skillDialogRef = useRef<HTMLDialogElement>(null);
   const searchId = useId();
   const discoverSearchId = useId();
   const installProjectId = useId();
@@ -592,15 +592,75 @@ export function App() {
     }
   }, [installTarget]);
 
-  useEffect(() => {
-    const dialog = skillDialogRef.current;
-    if (!dialog) return;
-    if (selectedSkillId && !dialog.open) {
-      dialog.showModal();
-    } else if (!selectedSkillId && dialog.open) {
-      dialog.close();
+  const navigateWithTransition = useCallback((update: () => void, focusId = "main-content") => {
+    const applyFocus = () => {
+      queueMicrotask(() => {
+        document.getElementById(focusId)?.focus({ preventScroll: true });
+      });
+    };
+    const doc = document as Document & {
+      startViewTransition?: (cb: () => void) => { finished: Promise<void> };
+    };
+    if (!doc.startViewTransition) {
+      update();
+      applyFocus();
+      return;
     }
-  }, [selectedSkillId]);
+    const transition = doc.startViewTransition(update);
+    void transition.finished.finally(applyFocus);
+  }, []);
+
+  useEffect(() => {
+    const applyHash = () => {
+      const raw = window.location.hash.replace(/^#\/?/, "");
+      if (!raw) return;
+      const parts = raw.split("/").map(decodeURIComponent);
+      const root = parts[0];
+      const validViews: readonly ViewId[] = [
+        "home",
+        "inventory",
+        "cleanup",
+        "discover",
+        "tokens",
+        "projects",
+        "sources",
+        "sessions",
+        "primitives",
+      ];
+      if (root === "skills") {
+        setView("inventory");
+        setSelectedSkillId(parts[1] ?? null);
+        return;
+      }
+      if (root && (validViews as readonly string[]).includes(root)) {
+        setView(root as ViewId);
+        if (root !== "inventory") setSelectedSkillId(null);
+        if (root !== "primitives") setSelectedPrimitive(null);
+        if (root !== "sessions") setSelectedSessionDetail(null);
+      }
+    };
+    applyHash();
+    window.addEventListener("hashchange", applyHash);
+    return () => window.removeEventListener("hashchange", applyHash);
+  }, []);
+
+  useEffect(() => {
+    const nextHash =
+      view === "inventory"
+        ? selectedSkillId
+          ? `#/skills/${encodeURIComponent(selectedSkillId)}`
+          : "#/skills"
+        : view === "primitives"
+          ? selectedPrimitive
+            ? `#/primitives/${primitiveTab}/${encodeURIComponent(selectedPrimitive.name)}`
+            : `#/primitives/${primitiveTab}`
+          : view === "sessions" && selectedSessionDetail
+            ? `#/sessions/${encodeURIComponent(selectedSessionDetail.id)}`
+            : `#/${view}`;
+    if (window.location.hash !== nextHash) {
+      window.history.replaceState(null, "", nextHash);
+    }
+  }, [primitiveTab, selectedPrimitive, selectedSessionDetail, selectedSkillId, view]);
 
   useEffect(() => {
     if (!installTarget) {
@@ -859,6 +919,91 @@ export function App() {
     setPreviewModal({ preview, execute: () => client.executeMigrateToApm(req) });
   };
 
+  const applyMutationToLocalState = useCallback(
+    (preview: DryRunPreview, removeCtx?: NonNullable<typeof previewModal>["removeContext"]) => {
+      const targetIds = new Set(preview.targetSkillIds);
+      if (targetIds.size === 0 && preview.action !== "upgrade") return;
+
+      setData((prev) => {
+        if (!prev) return prev;
+        let nextSkills = prev.snapshot.skills;
+
+        if (preview.action === "remove") {
+          nextSkills = prev.snapshot.skills
+            .map((s) => {
+              if (!targetIds.has(s.id)) return s;
+              if (!removeCtx || removeCtx.targetScope === "all") return null;
+              const remaining = s.exposures.filter((e) => {
+                if (removeCtx.targetScope === "global") return e.scope !== "global";
+                if (removeCtx.targetScope === "project") return e.scope !== "project";
+                if (removeCtx.targetScope === "selected-projects") {
+                  return (
+                    e.scope !== "project" ||
+                    !removeCtx.selectedProjects.some((p) => e.path.startsWith(p))
+                  );
+                }
+                return false;
+              });
+              if (remaining.length === 0) return null;
+              const nextProjectPaths =
+                removeCtx.targetScope === "project"
+                  ? []
+                  : removeCtx.targetScope === "selected-projects"
+                    ? s.projectPaths.filter((p) => !removeCtx.selectedProjects.includes(p))
+                    : s.projectPaths;
+              return {
+                ...s,
+                exposures: remaining,
+                projectPaths: nextProjectPaths,
+                projectCount: nextProjectPaths.length,
+              };
+            })
+            .filter((s): s is SkillRecord => s !== null);
+        } else if (preview.action === "migrate-to-apm") {
+          nextSkills = prev.snapshot.skills.map((s) =>
+            targetIds.has(s.id)
+              ? { ...s, provenance: { ...s.provenance, owningManager: "apm" } }
+              : s,
+          );
+        } else if (preview.action === "upgrade") {
+          nextSkills = prev.snapshot.skills.map((s) =>
+            targetIds.size === 0 || targetIds.has(s.id)
+              ? {
+                  ...s,
+                  provenance: {
+                    ...s.provenance,
+                    updateStatus: { ...s.provenance.updateStatus, updateAvailable: false },
+                  },
+                }
+              : s,
+          );
+        }
+
+        return {
+          ...prev,
+          snapshot: {
+            ...prev.snapshot,
+            skills: nextSkills,
+          },
+        };
+      });
+
+      if (preview.action === "remove") {
+        setCleanupCandidates((prev) => prev.filter((c) => !targetIds.has(c.skillId)));
+        if (selectedSkillId && targetIds.has(selectedSkillId)) {
+          if (!removeCtx || removeCtx.targetScope === "all") {
+            navigateWithTransition(() => setSelectedSkillId(null), "list-heading");
+          }
+        }
+      } else if (preview.action === "migrate-to-apm") {
+        setCleanupCandidates((prev) =>
+          prev.filter((c) => !(targetIds.has(c.skillId) && c.recommendedAction !== "remove")),
+        );
+      }
+    },
+    [navigateWithTransition, selectedSkillId],
+  );
+
   const openPrimitiveActionPreview = async (req: {
     action: "upgrade" | "migrate-to-apm" | "remove";
     kind: "mcp" | "hook" | "command" | "lsp" | "prompt";
@@ -875,10 +1020,52 @@ export function App() {
       execute: async () => {
         const res = await client.executePrimitiveAction(req);
         if (res.success) {
-          void client
-            .getPrimitives()
-            .then(setPrimitivesData)
-            .catch(() => undefined);
+          setPrimitivesData((prev) => {
+            if (!prev) return prev;
+            if (req.action === "remove") {
+              const filterOut = <T extends { name: string }>(arr: readonly T[]) =>
+                arr.filter((item) => item.name !== req.name);
+              const mcpServers = req.kind === "mcp" ? filterOut(prev.mcpServers) : prev.mcpServers;
+              const commands = req.kind === "command" ? filterOut(prev.commands) : prev.commands;
+              const prompts = req.kind === "prompt" ? filterOut(prev.prompts) : prev.prompts;
+              const hooks = req.kind === "hook" ? filterOut(prev.hooks) : prev.hooks;
+              const lsps = req.kind === "lsp" ? filterOut(prev.lsps) : prev.lsps;
+              const all = [...mcpServers, ...commands, ...prompts, ...hooks, ...lsps];
+              return {
+                ...prev,
+                mcpServers,
+                commands,
+                prompts,
+                hooks,
+                lsps,
+                summary: {
+                  totalPrimitives: all.length,
+                  driftedCount: all.filter((e) => e.hasDrift).length,
+                  totalEstimatedTokens: all.reduce((sum, e) => sum + e.estimatedTokens, 0),
+                },
+              };
+            }
+            if (req.action === "migrate-to-apm") {
+              const markApm = <T extends { name: string; owningManager: string }>(
+                arr: readonly T[],
+              ) =>
+                arr.map((item) =>
+                  item.name === req.name ? { ...item, owningManager: "apm" as const } : item,
+                );
+              return {
+                ...prev,
+                mcpServers: req.kind === "mcp" ? markApm(prev.mcpServers) : prev.mcpServers,
+                commands: req.kind === "command" ? markApm(prev.commands) : prev.commands,
+                prompts: req.kind === "prompt" ? markApm(prev.prompts) : prev.prompts,
+                hooks: req.kind === "hook" ? markApm(prev.hooks) : prev.hooks,
+                lsps: req.kind === "lsp" ? markApm(prev.lsps) : prev.lsps,
+              };
+            }
+            return prev;
+          });
+          if (req.action === "remove" && selectedPrimitive?.name === req.name) {
+            navigateWithTransition(() => setSelectedPrimitive(null), "list-heading");
+          }
         }
         return res;
       },
@@ -1514,80 +1701,86 @@ export function App() {
           {liveAnnouncement}
         </div>
 
-        <header className="topbar">
-          <div>
-            <h1>
-              {VIEW_TITLES[view]}
-              {view === "inventory" && harnessFilter !== "all" ? ` / ${harnessFilter}` : ""}
-            </h1>
-            <span className="text-[12.5px] text-[var(--muted)]">
-              {view === "inventory" && data
-                ? `${data.snapshot.harnessesScanned.length} harnesses · ${filteredSkills.length} matching`
-                : VIEW_SUBTITLES[view]}
-            </span>
-          </div>
-          <div className="toolbar">
-            {view === "inventory" && (
-              <div className="chip-group" role="group" aria-label="Layout mode">
-                <button
-                  type="button"
-                  className={`btn ${layoutMode === "list" ? "active-chip" : ""}`}
-                  aria-pressed={layoutMode === "list"}
-                  onClick={() => setLayoutMode("list")}
-                >
-                  <ListIcon size={12} aria-hidden="true" />
-                  <span>List</span>
-                </button>
-                <button
-                  type="button"
-                  className={`btn ${layoutMode === "cards" ? "active-chip" : ""}`}
-                  aria-pressed={layoutMode === "cards"}
-                  onClick={() => setLayoutMode("cards")}
-                >
-                  <LayoutGrid size={12} aria-hidden="true" />
-                  <span>Cards</span>
-                </button>
-              </div>
-            )}
-            {(view === "home" || view === "inventory") && cleanupCandidates.length > 0 && (
-              <button
-                type="button"
-                className="btn"
-                disabled={!data || loading}
-                onClick={() => setView("cleanup")}
-              >
-                <Sparkles size={13} aria-hidden="true" />
-                <span>Cleanup ({cleanupCandidates.length})</span>
-              </button>
-            )}
-            {(view === "home" || view === "inventory" || view === "cleanup") && (
-              <button
-                type="button"
-                className="btn"
-                disabled={!data || loading}
-                onClick={() => void openUpgradePreview("all")}
-              >
-                <ArrowUpCircle size={13} aria-hidden="true" />
-                <span>Upgrade All</span>
-              </button>
-            )}
-            <button
-              type="button"
-              className="btn primary"
-              disabled={loading}
-              onClick={() => void load(true)}
-            >
-              <RefreshCw size={13} aria-hidden="true" />
-              <span>
-                {loading
-                  ? "Scanning..."
-                  : view === "sessions" || view === "tokens"
-                    ? "Refresh"
-                    : "Rescan"}
+        {!(
+          (view === "inventory" && selectedSkill) ||
+          (view === "primitives" && selectedPrimitive) ||
+          (view === "sessions" && selectedSessionDetail)
+        ) && (
+          <header className="topbar">
+            <div>
+              <h1 id="list-heading" tabIndex={-1}>
+                {VIEW_TITLES[view]}
+                {view === "inventory" && harnessFilter !== "all" ? ` / ${harnessFilter}` : ""}
+              </h1>
+              <span className="text-[12.5px] text-[var(--muted)]">
+                {view === "inventory" && data
+                  ? `${data.snapshot.harnessesScanned.length} harnesses · ${filteredSkills.length} matching`
+                  : VIEW_SUBTITLES[view]}
               </span>
-            </button>
-          </div>
-        </header>
+            </div>
+            <div className="toolbar">
+              {view === "inventory" && (
+                <div className="chip-group" role="group" aria-label="Layout mode">
+                  <button
+                    type="button"
+                    className={`btn ${layoutMode === "list" ? "active-chip" : ""}`}
+                    aria-pressed={layoutMode === "list"}
+                    onClick={() => setLayoutMode("list")}
+                  >
+                    <ListIcon size={12} aria-hidden="true" />
+                    <span>List</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn ${layoutMode === "cards" ? "active-chip" : ""}`}
+                    aria-pressed={layoutMode === "cards"}
+                    onClick={() => setLayoutMode("cards")}
+                  >
+                    <LayoutGrid size={12} aria-hidden="true" />
+                    <span>Cards</span>
+                  </button>
+                </div>
+              )}
+              {(view === "home" || view === "inventory") && cleanupCandidates.length > 0 && (
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={!data || loading}
+                  onClick={() => setView("cleanup")}
+                >
+                  <Sparkles size={13} aria-hidden="true" />
+                  <span>Cleanup ({cleanupCandidates.length})</span>
+                </button>
+              )}
+              {(view === "home" || view === "inventory" || view === "cleanup") && (
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={!data || loading}
+                  onClick={() => void openUpgradePreview("all")}
+                >
+                  <ArrowUpCircle size={13} aria-hidden="true" />
+                  <span>Upgrade All</span>
+                </button>
+              )}
+              <button
+                type="button"
+                className="btn primary"
+                disabled={loading}
+                onClick={() => void load(true)}
+              >
+                <RefreshCw size={13} aria-hidden="true" />
+                <span>
+                  {loading
+                    ? "Scanning..."
+                    : view === "sessions" || view === "tokens"
+                      ? "Refresh"
+                      : "Rescan"}
+                </span>
+              </button>
+            </div>
+          </header>
+        )}
 
         {banner && (
           <div className="banner" role="status">
@@ -1607,25 +1800,30 @@ export function App() {
           </div>
         )}
 
-        {data && (
-          <section className="stats-strip" aria-label={`${VIEW_TITLES[view]} metrics`}>
-            {contextStats.map((stat) => {
-              const Icon = stat.icon;
-              return (
-                <div key={stat.label} className="stat-tile">
-                  <div
-                    className="stat-label"
-                    style={{ display: "inline-flex", alignItems: "center", gap: 5 }}
-                  >
-                    <Icon size={11} aria-hidden="true" />
-                    <span>{stat.label}</span>
+        {data &&
+          !(
+            (view === "inventory" && selectedSkill) ||
+            (view === "primitives" && selectedPrimitive) ||
+            (view === "sessions" && selectedSessionDetail)
+          ) && (
+            <section className="stats-strip" aria-label={`${VIEW_TITLES[view]} metrics`}>
+              {contextStats.map((stat) => {
+                const Icon = stat.icon;
+                return (
+                  <div key={stat.label} className="stat-tile">
+                    <div
+                      className="stat-label"
+                      style={{ display: "inline-flex", alignItems: "center", gap: 5 }}
+                    >
+                      <Icon size={11} aria-hidden="true" />
+                      <span>{stat.label}</span>
+                    </div>
+                    <div className="stat-value">{stat.value}</div>
                   </div>
-                  <div className="stat-value">{stat.value}</div>
-                </div>
-              );
-            })}
-          </section>
-        )}
+                );
+              })}
+            </section>
+          )}
 
         {loading && !data && (
           <div className="panel" aria-busy="true" aria-label="Loading inventory">
@@ -1834,1261 +2032,1305 @@ export function App() {
         )}
 
         {view === "inventory" && data && (
-          <>
-            <div className="filter-panel">
-              <div className="filter-row">
-                <div className="filter-group" style={{ flex: 1, minWidth: 280 }}>
-                  <label htmlFor={searchId} className="visually-hidden">
-                    Filter skills by name, author, or description
-                  </label>
-                  <input
-                    id={searchId}
-                    type="search"
-                    placeholder="Search skills, sources, descriptions..."
-                    value={search}
-                    onChange={(e) => {
-                      setSearch(e.target.value);
-                      setPage(0);
-                    }}
-                    style={{ minWidth: 240, flex: "1 1 240px", maxWidth: 340 }}
-                  />
-
-                  <span className="filter-group-label">Facets</span>
-                  <label htmlFor={managerSelectId} className="visually-hidden">
-                    Filter by package manager
-                  </label>
-                  <select
-                    id={managerSelectId}
-                    value={managerFilter}
-                    onChange={(e) => {
-                      setManagerFilter(e.target.value);
-                      setPage(0);
-                    }}
-                  >
-                    <option value="all">All Managers</option>
-                    <option value="apm">APM</option>
-                    <option value="npx-skills">npx skills</option>
-                    <option value="claude-plugin">Claude Plugin</option>
-                    <option value="antigravity-plugin">Antigravity Plugin</option>
-                    <option value="gemini-extension">Gemini Extension</option>
-                    <option value="git-clone">git clone</option>
-                    <option value="manual">manual</option>
-                  </select>
-
-                  <label htmlFor={authorSelectId} className="visually-hidden">
-                    Filter by source
-                  </label>
-                  <select
-                    id={authorSelectId}
-                    value={authorFilter}
-                    onChange={(e) => {
-                      setAuthorFilter(e.target.value);
-                      setPage(0);
-                    }}
-                    style={{ maxWidth: 180 }}
-                  >
-                    <option value="all">All Sources</option>
-                    {authorList.map((a) => (
-                      <option key={a} value={a}>
-                        {a}
-                      </option>
-                    ))}
-                  </select>
-
-                  <label htmlFor={groupBySelectId} className="visually-hidden">
-                    Group skills by
-                  </label>
-                  <select
-                    id={groupBySelectId}
-                    value={groupBy}
-                    onChange={(e) => {
-                      setGroupBy(e.target.value as "none" | "source" | "manager" | "harness");
-                      setCollapsedGroups(new Set());
-                    }}
-                  >
-                    <option value="none">Group: None</option>
-                    <option value="source">Group: Source</option>
-                    <option value="manager">Group: Manager</option>
-                    <option value="harness">Group: Harness</option>
-                  </select>
-                </div>
-
-                <div className="filter-group">
-                  <span className="filter-group-label">Scope</span>
-                  <div className="chip-group" role="group" aria-label="Scope filters">
-                    {(
-                      [
-                        { id: "all", label: "All Scope", icon: Layers },
-                        { id: "global", label: "Global", icon: Globe },
-                        { id: "project", label: "Project", icon: FolderGit2 },
-                      ] as const
-                    ).map((sc) => {
-                      const Icon = sc.icon;
-                      return (
-                        <button
-                          key={sc.id}
-                          type="button"
-                          className={`btn ${scopeFilter === sc.id ? "active-chip" : ""}`}
-                          aria-pressed={scopeFilter === sc.id}
-                          onClick={() => {
-                            setScopeFilter(sc.id);
-                            setPage(0);
-                          }}
-                        >
-                          <Icon size={12} aria-hidden="true" />
-                          <span>{sc.label}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-
-              <div className="filter-row">
-                <div className="filter-group" style={{ flex: 1 }}>
-                  <span className="filter-group-label">Health &amp; Status</span>
-                  <div
-                    className="underline-tabs"
-                    role="group"
-                    aria-label="Status filters"
-                    style={{ borderBottom: 0 }}
-                  >
-                    <button
-                      type="button"
-                      className="underline-tab"
-                      aria-pressed={healthFilter === "all"}
-                      onClick={() => {
-                        setHealthFilter("all");
-                        setPage(0);
-                      }}
-                    >
-                      <Layers size={13} aria-hidden="true" />
-                      <span>All</span>
-                      <span className="count-pill">{data.snapshot.skills.length}</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="underline-tab"
-                      aria-pressed={healthFilter === "broken"}
-                      onClick={() => {
-                        setHealthFilter("broken");
-                        setPage(0);
-                      }}
-                    >
-                      <Link2Off size={13} aria-hidden="true" />
-                      <span>Broken</span>
-                      <span className="count-pill">{brokenCount}</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="underline-tab"
-                      aria-pressed={healthFilter === "drift"}
-                      onClick={() => {
-                        setHealthFilter("drift");
-                        setPage(0);
-                      }}
-                    >
-                      <GitCompare size={13} aria-hidden="true" />
-                      <span>Drift</span>
-                      <span className="count-pill">{driftCount}</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="underline-tab"
-                      aria-pressed={healthFilter === "duplicates"}
-                      onClick={() => {
-                        setHealthFilter("duplicates");
-                        setPage(0);
-                      }}
-                    >
-                      <Copy size={13} aria-hidden="true" />
-                      <span>Duplicates</span>
-                      <span className="count-pill">{duplicatesCount}</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="underline-tab"
-                      aria-pressed={healthFilter === "unused"}
-                      onClick={() => {
-                        setHealthFilter("unused");
-                        setPage(0);
-                      }}
-                    >
-                      <Clock size={13} aria-hidden="true" />
-                      <span>Unused</span>
-                      <span className="count-pill">{unusedCount}</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="underline-tab"
-                      aria-pressed={healthFilter === "updates"}
-                      onClick={() => {
-                        setHealthFilter("updates");
-                        setPage(0);
-                      }}
-                    >
-                      <Download size={13} aria-hidden="true" />
-                      <span>Updates</span>
-                      <span className="count-pill">{updatesCount}</span>
-                    </button>
-                  </div>
-                </div>
-                {authorFilter !== "all" && (
-                  <div className="toolbar">
-                    <button
-                      type="button"
-                      className="btn"
-                      onClick={() => void openUpgradePreview("author", authorFilter)}
-                    >
-                      <ArrowUpCircle size={12} aria-hidden="true" />
-                      <span>Upgrade Source</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="btn danger"
-                      onClick={() => void openRemoveSourcePreview(authorFilter)}
-                    >
-                      <Trash2 size={12} aria-hidden="true" />
-                      <span>Remove Source</span>
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {healthFilter === "duplicates" && filteredSkills.length > 0 && (
-              <div
-                className="panel"
-                style={{
-                  padding: "10px 14px",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: 12,
-                  flexWrap: "wrap",
-                  borderColor: "var(--warning, #d97706)",
-                }}
-              >
-                <div style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12 }}>
-                  <Copy size={14} aria-hidden="true" />
-                  <span>
-                    <strong>
-                      {
-                        filteredSkills.filter((s) => (s.duplicates?.siblingIds.length ?? 0) > 0)
-                          .length
-                      }
-                    </strong>{" "}
-                    cross-skill duplicate(s) ·{" "}
-                    <strong>
-                      {filteredSkills.filter((s) => (s.duplicates?.physicalCopies ?? 0) > 1).length}
-                    </strong>{" "}
-                    multi-copy skill(s)
-                  </span>
-                </div>
-                <span style={{ fontSize: 12, color: "var(--muted)" }}>
-                  Click any skill to inspect duplicate siblings or remove extra copies via manager
-                  CLI.
-                </span>
-              </div>
-            )}
-
-            {filteredSkills.length === 0 ? (
-              <div className="panel empty-state">
-                <div>No skills match the current filters.</div>
-                <button type="button" className="btn" onClick={resetFilters}>
-                  Reset filters
-                </button>
-              </div>
-            ) : groupedSkills ? (
-              <div style={{ display: "grid", gap: 10 }}>
-                {groupedSkills.map(([groupKey, groupItems]) => {
-                  const isCollapsed = collapsedGroups.has(groupKey);
-                  const sample = groupItems[0];
-                  return (
-                    <section key={groupKey} className="panel">
-                      <div
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "space-between",
-                          gap: 8,
-                        }}
-                      >
-                        <button
-                          type="button"
-                          className="source-group-toggle"
-                          style={{ flex: 1 }}
-                          aria-expanded={!isCollapsed}
-                          onClick={() =>
-                            setCollapsedGroups((prev) => {
-                              const next = new Set(prev);
-                              if (next.has(groupKey)) next.delete(groupKey);
-                              else next.add(groupKey);
-                              return next;
-                            })
-                          }
-                        >
-                          <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                            {isCollapsed ? (
-                              <ChevronRight size={14} aria-hidden="true" />
-                            ) : (
-                              <ChevronDown size={14} aria-hidden="true" />
-                            )}
-                            {groupBy === "source" && sample && (
-                              <SourceIcon
-                                manager={sample.provenance.owningManager}
-                                sourceRepo={sample.provenance.sourceRepo}
-                                sourceName={groupKey}
-                              />
-                            )}
-                            {groupBy === "harness" && (
-                              <HarnessIcon harnessId={groupKey} size={14} />
-                            )}
-                            <h2 style={{ margin: 0 }}>{groupKey}</h2>
-                          </div>
-                          <span className="badge">{groupItems.length} skills</span>
-                        </button>
-                        {groupBy === "source" && (
-                          <ActionMenu
-                            label={`Actions for source ${groupKey}`}
-                            items={[
-                              {
-                                id: "upgrade-source",
-                                label: "Upgrade source",
-                                icon: <ArrowUpCircle size={13} />,
-                                onSelect: () => void openUpgradePreview("author", groupKey),
-                              },
-                              {
-                                id: "remove-source",
-                                label: "Remove source",
-                                icon: <Trash2 size={13} />,
-                                tone: "danger",
-                                separatorBefore: true,
-                                onSelect: () => void openRemoveSourcePreview(groupKey),
-                              },
-                            ]}
-                          />
-                        )}
-                      </div>
-                      {!isCollapsed && (
-                        <div style={{ marginTop: 10 }}>
-                          {layoutMode === "cards" ? (
-                            <div className="discover-grid">{groupItems.map(renderSkillCard)}</div>
-                          ) : (
-                            <div className="table-wrapper" tabIndex={0}>
-                              <table>
-                                <tbody>
-                                  {groupItems.map((sk) => (
-                                    <tr key={sk.id} onClick={() => setSelectedSkillId(sk.id)}>
-                                      <td>
-                                        <strong>{sk.name}</strong>
-                                      </td>
-                                      <td>
-                                        <span className="badge">{sk.provenance.owningManager}</span>
-                                      </td>
-                                      <td>{renderScopeBadges(sk)}</td>
-                                      <td className="mono num">{sk.tokens.descriptionTokens}t</td>
-                                      <td className="mono num">{sk.tokens.fullTokens}t</td>
-                                      <td className="mono num">{sk.projectCount} proj</td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </section>
-                  );
-                })}
-              </div>
-            ) : layoutMode === "cards" ? (
-              <div className="discover-grid">{pagedSkills.map(renderSkillCard)}</div>
-            ) : (
-              <div
-                className="table-wrapper"
-                tabIndex={0}
-                role="region"
-                aria-labelledby={invCaptionId}
-              >
-                <table>
-                  <caption id={invCaptionId} className="visually-hidden">
-                    Discovered skills inventory across harnesses and projects
-                  </caption>
-                  <thead>
-                    <tr>
-                      <th scope="col" aria-sort={sortCol === "name" ? sortDir : undefined}>
-                        <button
-                          type="button"
-                          className="sort-btn"
-                          onClick={() => toggleSort("name")}
-                        >
-                          <span>Skill</span>
-                          <SortIcon direction={sortCol === "name" ? sortDir : undefined} />
-                        </button>
-                      </th>
-                      <th scope="col" aria-sort={sortCol === "author" ? sortDir : undefined}>
-                        <button
-                          type="button"
-                          className="sort-btn"
-                          onClick={() => toggleSort("author")}
-                        >
-                          <span>Source</span>
-                          <SortIcon direction={sortCol === "author" ? sortDir : undefined} />
-                        </button>
-                      </th>
-                      <th scope="col" aria-sort={sortCol === "manager" ? sortDir : undefined}>
-                        <button
-                          type="button"
-                          className="sort-btn"
-                          onClick={() => toggleSort("manager")}
-                        >
-                          <span>Manager</span>
-                          <SortIcon direction={sortCol === "manager" ? sortDir : undefined} />
-                        </button>
-                      </th>
-                      <th scope="col">Scope</th>
-                      <th scope="col">Harnesses</th>
-                      <th scope="col" aria-sort={sortCol === "descTokens" ? sortDir : undefined}>
-                        <button
-                          type="button"
-                          className="sort-btn"
-                          onClick={() => toggleSort("descTokens")}
-                        >
-                          <span>Desc</span>
-                          <SortIcon direction={sortCol === "descTokens" ? sortDir : undefined} />
-                        </button>
-                      </th>
-                      <th scope="col" aria-sort={sortCol === "fullTokens" ? sortDir : undefined}>
-                        <button
-                          type="button"
-                          className="sort-btn"
-                          onClick={() => toggleSort("fullTokens")}
-                        >
-                          <span>Full</span>
-                          <SortIcon direction={sortCol === "fullTokens" ? sortDir : undefined} />
-                        </button>
-                      </th>
-                      <th scope="col" aria-sort={sortCol === "projects" ? sortDir : undefined}>
-                        <button
-                          type="button"
-                          className="sort-btn"
-                          onClick={() => toggleSort("projects")}
-                        >
-                          <span>Proj</span>
-                          <SortIcon direction={sortCol === "projects" ? sortDir : undefined} />
-                        </button>
-                      </th>
-                      <th scope="col" className="sticky-actions-col" style={{ textAlign: "right" }}>
-                        Actions
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {pagedSkills.map((skill) => {
-                      const isSelected = selectedSkillId === skill.id;
-                      const uniqueExposures = Array.from(
-                        new Map(skill.exposures.map((e) => [e.harnessId, e])).values(),
-                      );
-                      const popoverId = `harnesses-${skill.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
-                      return (
-                        <tr
-                          key={skill.id}
-                          data-selected={isSelected}
-                          onClick={() => setSelectedSkillId(isSelected ? null : skill.id)}
-                        >
-                          <td>
-                            <span
-                              style={{
-                                display: "inline-flex",
-                                alignItems: "center",
-                                gap: 5,
-                                flexWrap: "wrap",
-                              }}
-                            >
-                              <strong>{skill.name}</strong>
-                              {skill.hasBrokenLinks && (
-                                <span className="badge danger" title="Broken symlink exposure(s)">
-                                  <Link2Off size={10} aria-hidden="true" />
-                                </span>
-                              )}
-                              {skill.hasDrift && (
-                                <span
-                                  className="badge warn"
-                                  title={skill.driftDetails?.summary ?? "Drift detected"}
-                                >
-                                  <GitCompare size={10} aria-hidden="true" />
-                                </span>
-                              )}
-                              {skill.duplicates && (
-                                <span
-                                  className="badge warn"
-                                  title={`Duplicates: ${skill.duplicates.reasons.join(", ")}`}
-                                >
-                                  <Copy size={10} aria-hidden="true" />
-                                </span>
-                              )}
-                            </span>
-                          </td>
-                          <td>
-                            <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                              <SourceIcon
-                                manager={skill.provenance.owningManager}
-                                sourceRepo={skill.provenance.sourceRepo}
-                                sourceName={skill.provenance.author}
-                              />
-                              <span>{skill.provenance.author}</span>
-                            </span>
-                          </td>
-                          <td>
-                            <span className="badge">{skill.provenance.owningManager}</span>
-                          </td>
-                          <td>{renderScopeBadges(skill)}</td>
-                          <td onClick={(e) => e.stopPropagation()}>
-                            <div className="harness-icons-row">
-                              {uniqueExposures.slice(0, 5).map((exp) => (
-                                <span
-                                  key={exp.harnessId}
-                                  className={`harness-icon-chip ${
-                                    exp.linkType === "symlink-broken" ? "broken" : ""
-                                  }`}
-                                  title={`${exp.harnessId} (${exp.scope}:${exp.linkType})`}
-                                  aria-label={exp.harnessId}
-                                >
-                                  <HarnessIcon harnessId={exp.harnessId} size={13} />
-                                </span>
-                              ))}
-                              {uniqueExposures.length > 0 && (
-                                <>
-                                  <button
-                                    type="button"
-                                    className="btn"
-                                    style={{ minBlockSize: 24, padding: "2px 6px", fontSize: 11 }}
-                                    popoverTarget={popoverId}
-                                    aria-label={`Show all ${uniqueExposures.length} harnesses for ${skill.name}`}
-                                  >
-                                    {uniqueExposures.length > 5 ? (
-                                      <>
-                                        <span>+{uniqueExposures.length - 5}</span>
-                                        <ChevronDown size={11} aria-hidden="true" />
-                                      </>
-                                    ) : (
-                                      <ChevronDown size={11} aria-hidden="true" />
-                                    )}
-                                  </button>
-                                  <div id={popoverId} popover="auto" className="harness-popover">
-                                    <div className="nav-group-label" style={{ padding: 0 }}>
-                                      {skill.name} — Harnesses ({skill.exposures.length})
-                                    </div>
-                                    <ul className="harness-popover-list">
-                                      {skill.exposures.map((exp, idx) => (
-                                        <li key={idx} className="harness-popover-item">
-                                          <span
-                                            style={{
-                                              display: "inline-flex",
-                                              alignItems: "center",
-                                              gap: 7,
-                                            }}
-                                          >
-                                            <HarnessIcon harnessId={exp.harnessId} size={13} />
-                                            <span>{exp.harnessId}</span>
-                                          </span>
-                                          <span
-                                            className={`badge ${
-                                              exp.linkType === "symlink-broken" ? "danger" : ""
-                                            }`}
-                                          >
-                                            {exp.scope}:
-                                            {exp.linkType === "physical-copy"
-                                              ? "copy"
-                                              : exp.linkType === "symlink-broken"
-                                                ? "broken"
-                                                : "link"}
-                                          </span>
-                                        </li>
-                                      ))}
-                                    </ul>
-                                  </div>
-                                </>
-                              )}
-                            </div>
-                          </td>
-                          <td className="mono num">{skill.tokens.descriptionTokens}</td>
-                          <td className="mono num">{skill.tokens.fullTokens}</td>
-                          <td className="mono num">{skill.projectCount}</td>
-                          <td
-                            className="sticky-actions-col"
-                            onClick={(e) => e.stopPropagation()}
-                            style={{ textAlign: "right" }}
-                          >
-                            <ActionMenu
-                              label={`Actions for ${skill.name}`}
-                              items={[
-                                {
-                                  id: "inspect",
-                                  label: "Inspect details",
-                                  icon: <FileText size={13} />,
-                                  onSelect: () => setSelectedSkillId(skill.id),
-                                },
-                                {
-                                  id: "upgrade",
-                                  label: "Upgrade",
-                                  icon: <ArrowUpCircle size={13} />,
-                                  onSelect: () => void openUpgradePreview("skill", skill.id),
-                                },
-                                ...(skill.provenance.owningManager !== "apm"
-                                  ? [
-                                      {
-                                        id: "migrate",
-                                        label: "Migrate to APM",
-                                        icon: <Boxes size={13} />,
-                                        onSelect: () => void openMigratePreview([skill.id]),
-                                      },
-                                    ]
-                                  : []),
-                                {
-                                  id: "remove",
-                                  label: "Remove",
-                                  icon: <Trash2 size={13} />,
-                                  tone: "danger" as const,
-                                  separatorBefore: true,
-                                  onSelect: () => void openRemovePreview(skill),
-                                },
-                              ]}
-                            />
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            <dialog
-              ref={skillDialogRef}
-              className="skill-detail-dialog"
-              aria-labelledby="skill-inspector-title"
-              onClick={(e) => {
-                if (e.target === e.currentTarget) setSelectedSkillId(null);
-              }}
-              onClose={(e) => {
-                e.currentTarget.returnValue = "";
-                setSelectedSkillId(null);
-              }}
+          <div style={{ position: "relative", minWidth: 0 }}>
+            <div
+              className={selectedSkill ? "spa-view inactive" : "spa-view"}
+              aria-hidden={Boolean(selectedSkill)}
+              inert={Boolean(selectedSkill)}
             >
-              {selectedSkill && (
-                <div className="dialog-body">
-                  <div className="topbar" style={{ paddingBottom: 8 }}>
-                    <div>
-                      <h2 id="skill-inspector-title" style={{ margin: 0, fontSize: 16 }}>
-                        {selectedSkill.name}
-                      </h2>
-                      <div className="mono" style={{ color: "var(--muted)" }}>
-                        {selectedSkill.id}
-                      </div>
+              <div className="filter-panel">
+                <div className="filter-row">
+                  <div className="filter-group" style={{ flex: 1, minWidth: 280 }}>
+                    <label htmlFor={searchId} className="visually-hidden">
+                      Filter skills by name, author, or description
+                    </label>
+                    <input
+                      id={searchId}
+                      type="search"
+                      placeholder="Search skills, sources, descriptions..."
+                      value={search}
+                      onChange={(e) => {
+                        setSearch(e.target.value);
+                        setPage(0);
+                      }}
+                      style={{ minWidth: 240, flex: "1 1 240px", maxWidth: 340 }}
+                    />
+
+                    <span className="filter-group-label">Facets</span>
+                    <label htmlFor={managerSelectId} className="visually-hidden">
+                      Filter by package manager
+                    </label>
+                    <select
+                      id={managerSelectId}
+                      value={managerFilter}
+                      onChange={(e) => {
+                        setManagerFilter(e.target.value);
+                        setPage(0);
+                      }}
+                    >
+                      <option value="all">All Managers</option>
+                      <option value="apm">APM</option>
+                      <option value="npx-skills">npx skills</option>
+                      <option value="claude-plugin">Claude Plugin</option>
+                      <option value="antigravity-plugin">Antigravity Plugin</option>
+                      <option value="gemini-extension">Gemini Extension</option>
+                      <option value="git-clone">git clone</option>
+                      <option value="manual">manual</option>
+                    </select>
+
+                    <label htmlFor={authorSelectId} className="visually-hidden">
+                      Filter by source
+                    </label>
+                    <select
+                      id={authorSelectId}
+                      value={authorFilter}
+                      onChange={(e) => {
+                        setAuthorFilter(e.target.value);
+                        setPage(0);
+                      }}
+                      style={{ maxWidth: 180 }}
+                    >
+                      <option value="all">All Sources</option>
+                      {authorList.map((a) => (
+                        <option key={a} value={a}>
+                          {a}
+                        </option>
+                      ))}
+                    </select>
+
+                    <label htmlFor={groupBySelectId} className="visually-hidden">
+                      Group skills by
+                    </label>
+                    <select
+                      id={groupBySelectId}
+                      value={groupBy}
+                      onChange={(e) => {
+                        setGroupBy(e.target.value as "none" | "source" | "manager" | "harness");
+                        setCollapsedGroups(new Set());
+                      }}
+                    >
+                      <option value="none">Group: None</option>
+                      <option value="source">Group: Source</option>
+                      <option value="manager">Group: Manager</option>
+                      <option value="harness">Group: Harness</option>
+                    </select>
+                  </div>
+
+                  <div className="filter-group">
+                    <span className="filter-group-label">Scope</span>
+                    <div className="chip-group" role="group" aria-label="Scope filters">
+                      {(
+                        [
+                          { id: "all", label: "All Scope", icon: Layers },
+                          { id: "global", label: "Global", icon: Globe },
+                          { id: "project", label: "Project", icon: FolderGit2 },
+                        ] as const
+                      ).map((sc) => {
+                        const Icon = sc.icon;
+                        return (
+                          <button
+                            key={sc.id}
+                            type="button"
+                            className={`btn ${scopeFilter === sc.id ? "active-chip" : ""}`}
+                            aria-pressed={scopeFilter === sc.id}
+                            onClick={() => {
+                              setScopeFilter(sc.id);
+                              setPage(0);
+                            }}
+                          >
+                            <Icon size={12} aria-hidden="true" />
+                            <span>{sc.label}</span>
+                          </button>
+                        );
+                      })}
                     </div>
-                    <div className="toolbar">
-                      {skillContent?.skillsShUrl && (
-                        <a
-                          href={skillContent.skillsShUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-link"
-                        >
-                          <span>skills.sh</span>
-                          <ExternalLink size={12} aria-hidden="true" />
-                        </a>
-                      )}
+                  </div>
+                </div>
+
+                <div className="filter-row">
+                  <div className="filter-group" style={{ flex: 1 }}>
+                    <span className="filter-group-label">Health &amp; Status</span>
+                    <div
+                      className="underline-tabs"
+                      role="group"
+                      aria-label="Status filters"
+                      style={{ borderBottom: 0 }}
+                    >
                       <button
                         type="button"
-                        className="icon-ghost-btn"
-                        autoFocus
-                        aria-label="Close inspector"
-                        onClick={() => setSelectedSkillId(null)}
+                        className="underline-tab"
+                        aria-pressed={healthFilter === "all"}
+                        onClick={() => {
+                          setHealthFilter("all");
+                          setPage(0);
+                        }}
                       >
-                        <X size={16} aria-hidden="true" />
+                        <Layers size={13} aria-hidden="true" />
+                        <span>All</span>
+                        <span className="count-pill">{data.snapshot.skills.length}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="underline-tab"
+                        aria-pressed={healthFilter === "broken"}
+                        onClick={() => {
+                          setHealthFilter("broken");
+                          setPage(0);
+                        }}
+                      >
+                        <Link2Off size={13} aria-hidden="true" />
+                        <span>Broken</span>
+                        <span className="count-pill">{brokenCount}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="underline-tab"
+                        aria-pressed={healthFilter === "drift"}
+                        onClick={() => {
+                          setHealthFilter("drift");
+                          setPage(0);
+                        }}
+                      >
+                        <GitCompare size={13} aria-hidden="true" />
+                        <span>Drift</span>
+                        <span className="count-pill">{driftCount}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="underline-tab"
+                        aria-pressed={healthFilter === "duplicates"}
+                        onClick={() => {
+                          setHealthFilter("duplicates");
+                          setPage(0);
+                        }}
+                      >
+                        <Copy size={13} aria-hidden="true" />
+                        <span>Duplicates</span>
+                        <span className="count-pill">{duplicatesCount}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="underline-tab"
+                        aria-pressed={healthFilter === "unused"}
+                        onClick={() => {
+                          setHealthFilter("unused");
+                          setPage(0);
+                        }}
+                      >
+                        <Clock size={13} aria-hidden="true" />
+                        <span>Unused</span>
+                        <span className="count-pill">{unusedCount}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="underline-tab"
+                        aria-pressed={healthFilter === "updates"}
+                        onClick={() => {
+                          setHealthFilter("updates");
+                          setPage(0);
+                        }}
+                      >
+                        <Download size={13} aria-hidden="true" />
+                        <span>Updates</span>
+                        <span className="count-pill">{updatesCount}</span>
                       </button>
                     </div>
                   </div>
+                  {authorFilter !== "all" && (
+                    <div className="toolbar">
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => void openUpgradePreview("author", authorFilter)}
+                      >
+                        <ArrowUpCircle size={12} aria-hidden="true" />
+                        <span>Upgrade Source</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="btn danger"
+                        onClick={() => void openRemoveSourcePreview(authorFilter)}
+                      >
+                        <Trash2 size={12} aria-hidden="true" />
+                        <span>Remove Source</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
 
-                  <div className="underline-tabs" role="tablist" aria-label="Inspector tabs">
+              {healthFilter === "duplicates" && filteredSkills.length > 0 && (
+                <div
+                  className="panel"
+                  style={{
+                    padding: "10px 14px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 12,
+                    flexWrap: "wrap",
+                    borderColor: "var(--warning, #d97706)",
+                  }}
+                >
+                  <div
+                    style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12 }}
+                  >
+                    <Copy size={14} aria-hidden="true" />
+                    <span>
+                      <strong>
+                        {
+                          filteredSkills.filter((s) => (s.duplicates?.siblingIds.length ?? 0) > 0)
+                            .length
+                        }
+                      </strong>{" "}
+                      cross-skill duplicate(s) ·{" "}
+                      <strong>
+                        {
+                          filteredSkills.filter((s) => (s.duplicates?.physicalCopies ?? 0) > 1)
+                            .length
+                        }
+                      </strong>{" "}
+                      multi-copy skill(s)
+                    </span>
+                  </div>
+                  <span style={{ fontSize: 12, color: "var(--muted)" }}>
+                    Click any skill to inspect duplicate siblings or remove extra copies via manager
+                    CLI.
+                  </span>
+                </div>
+              )}
+
+              {filteredSkills.length === 0 ? (
+                <div className="panel empty-state">
+                  <div>No skills match the current filters.</div>
+                  <button type="button" className="btn" onClick={resetFilters}>
+                    Reset filters
+                  </button>
+                </div>
+              ) : groupedSkills ? (
+                <div style={{ display: "grid", gap: 10 }}>
+                  {groupedSkills.map(([groupKey, groupItems]) => {
+                    const isCollapsed = collapsedGroups.has(groupKey);
+                    const sample = groupItems[0];
+                    return (
+                      <section key={groupKey} className="panel">
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            gap: 8,
+                          }}
+                        >
+                          <button
+                            type="button"
+                            className="source-group-toggle"
+                            style={{ flex: 1 }}
+                            aria-expanded={!isCollapsed}
+                            onClick={() =>
+                              setCollapsedGroups((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(groupKey)) next.delete(groupKey);
+                                else next.add(groupKey);
+                                return next;
+                              })
+                            }
+                          >
+                            <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                              {isCollapsed ? (
+                                <ChevronRight size={14} aria-hidden="true" />
+                              ) : (
+                                <ChevronDown size={14} aria-hidden="true" />
+                              )}
+                              {groupBy === "source" && sample && (
+                                <SourceIcon
+                                  manager={sample.provenance.owningManager}
+                                  sourceRepo={sample.provenance.sourceRepo}
+                                  sourceName={groupKey}
+                                />
+                              )}
+                              {groupBy === "harness" && (
+                                <HarnessIcon harnessId={groupKey} size={14} />
+                              )}
+                              <h2 style={{ margin: 0 }}>{groupKey}</h2>
+                            </div>
+                            <span className="badge">{groupItems.length} skills</span>
+                          </button>
+                          {groupBy === "source" && (
+                            <ActionMenu
+                              label={`Actions for source ${groupKey}`}
+                              items={[
+                                {
+                                  id: "upgrade-source",
+                                  label: "Upgrade source",
+                                  icon: <ArrowUpCircle size={13} />,
+                                  onSelect: () => void openUpgradePreview("author", groupKey),
+                                },
+                                {
+                                  id: "remove-source",
+                                  label: "Remove source",
+                                  icon: <Trash2 size={13} />,
+                                  tone: "danger",
+                                  separatorBefore: true,
+                                  onSelect: () => void openRemoveSourcePreview(groupKey),
+                                },
+                              ]}
+                            />
+                          )}
+                        </div>
+                        {!isCollapsed && (
+                          <div style={{ marginTop: 10 }}>
+                            {layoutMode === "cards" ? (
+                              <div className="discover-grid">{groupItems.map(renderSkillCard)}</div>
+                            ) : (
+                              <div className="table-wrapper" tabIndex={0}>
+                                <table>
+                                  <tbody>
+                                    {groupItems.map((sk) => (
+                                      <tr key={sk.id} onClick={() => setSelectedSkillId(sk.id)}>
+                                        <td>
+                                          <strong>{sk.name}</strong>
+                                        </td>
+                                        <td>
+                                          <span className="badge">
+                                            {sk.provenance.owningManager}
+                                          </span>
+                                        </td>
+                                        <td>{renderScopeBadges(sk)}</td>
+                                        <td className="mono num">{sk.tokens.descriptionTokens}t</td>
+                                        <td className="mono num">{sk.tokens.fullTokens}t</td>
+                                        <td className="mono num">{sk.projectCount} proj</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </section>
+                    );
+                  })}
+                </div>
+              ) : layoutMode === "cards" ? (
+                <div className="discover-grid">{pagedSkills.map(renderSkillCard)}</div>
+              ) : (
+                <div
+                  className="table-wrapper"
+                  tabIndex={0}
+                  role="region"
+                  aria-labelledby={invCaptionId}
+                >
+                  <table>
+                    <caption id={invCaptionId} className="visually-hidden">
+                      Discovered skills inventory across harnesses and projects
+                    </caption>
+                    <thead>
+                      <tr>
+                        <th scope="col" aria-sort={sortCol === "name" ? sortDir : undefined}>
+                          <button
+                            type="button"
+                            className="sort-btn"
+                            onClick={() => toggleSort("name")}
+                          >
+                            <span>Skill</span>
+                            <SortIcon direction={sortCol === "name" ? sortDir : undefined} />
+                          </button>
+                        </th>
+                        <th scope="col" aria-sort={sortCol === "author" ? sortDir : undefined}>
+                          <button
+                            type="button"
+                            className="sort-btn"
+                            onClick={() => toggleSort("author")}
+                          >
+                            <span>Source</span>
+                            <SortIcon direction={sortCol === "author" ? sortDir : undefined} />
+                          </button>
+                        </th>
+                        <th scope="col" aria-sort={sortCol === "manager" ? sortDir : undefined}>
+                          <button
+                            type="button"
+                            className="sort-btn"
+                            onClick={() => toggleSort("manager")}
+                          >
+                            <span>Manager</span>
+                            <SortIcon direction={sortCol === "manager" ? sortDir : undefined} />
+                          </button>
+                        </th>
+                        <th scope="col">Scope</th>
+                        <th scope="col">Harnesses</th>
+                        <th scope="col" aria-sort={sortCol === "descTokens" ? sortDir : undefined}>
+                          <button
+                            type="button"
+                            className="sort-btn"
+                            onClick={() => toggleSort("descTokens")}
+                          >
+                            <span>Desc</span>
+                            <SortIcon direction={sortCol === "descTokens" ? sortDir : undefined} />
+                          </button>
+                        </th>
+                        <th scope="col" aria-sort={sortCol === "fullTokens" ? sortDir : undefined}>
+                          <button
+                            type="button"
+                            className="sort-btn"
+                            onClick={() => toggleSort("fullTokens")}
+                          >
+                            <span>Full</span>
+                            <SortIcon direction={sortCol === "fullTokens" ? sortDir : undefined} />
+                          </button>
+                        </th>
+                        <th scope="col" aria-sort={sortCol === "projects" ? sortDir : undefined}>
+                          <button
+                            type="button"
+                            className="sort-btn"
+                            onClick={() => toggleSort("projects")}
+                          >
+                            <span>Proj</span>
+                            <SortIcon direction={sortCol === "projects" ? sortDir : undefined} />
+                          </button>
+                        </th>
+                        <th
+                          scope="col"
+                          className="sticky-actions-col"
+                          style={{ textAlign: "right" }}
+                        >
+                          Actions
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pagedSkills.map((skill) => {
+                        const isSelected = selectedSkillId === skill.id;
+                        const uniqueExposures = Array.from(
+                          new Map(skill.exposures.map((e) => [e.harnessId, e])).values(),
+                        );
+                        const popoverId = `harnesses-${skill.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+                        return (
+                          <tr
+                            key={skill.id}
+                            data-selected={isSelected}
+                            onClick={() =>
+                              navigateWithTransition(
+                                () => setSelectedSkillId(isSelected ? null : skill.id),
+                                isSelected ? "list-heading" : "detail-heading",
+                              )
+                            }
+                          >
+                            <td>
+                              <span
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: 5,
+                                  flexWrap: "wrap",
+                                }}
+                              >
+                                <strong>{skill.name}</strong>
+                                {skill.hasBrokenLinks && (
+                                  <span className="badge danger" title="Broken symlink exposure(s)">
+                                    <Link2Off size={10} aria-hidden="true" />
+                                  </span>
+                                )}
+                                {skill.hasDrift && (
+                                  <span
+                                    className="badge warn"
+                                    title={skill.driftDetails?.summary ?? "Drift detected"}
+                                  >
+                                    <GitCompare size={10} aria-hidden="true" />
+                                  </span>
+                                )}
+                                {skill.duplicates && (
+                                  <span
+                                    className="badge warn"
+                                    title={`Duplicates: ${skill.duplicates.reasons.join(", ")}`}
+                                  >
+                                    <Copy size={10} aria-hidden="true" />
+                                  </span>
+                                )}
+                              </span>
+                            </td>
+                            <td>
+                              <span
+                                style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+                              >
+                                <SourceIcon
+                                  manager={skill.provenance.owningManager}
+                                  sourceRepo={skill.provenance.sourceRepo}
+                                  sourceName={skill.provenance.author}
+                                />
+                                <span>{skill.provenance.author}</span>
+                              </span>
+                            </td>
+                            <td>
+                              <span className="badge">{skill.provenance.owningManager}</span>
+                            </td>
+                            <td>{renderScopeBadges(skill)}</td>
+                            <td onClick={(e) => e.stopPropagation()}>
+                              <div className="harness-icons-row">
+                                {uniqueExposures.slice(0, 5).map((exp) => (
+                                  <span
+                                    key={exp.harnessId}
+                                    className={`harness-icon-chip ${
+                                      exp.linkType === "symlink-broken" ? "broken" : ""
+                                    }`}
+                                    title={`${exp.harnessId} (${exp.scope}:${exp.linkType})`}
+                                    aria-label={exp.harnessId}
+                                  >
+                                    <HarnessIcon harnessId={exp.harnessId} size={13} />
+                                  </span>
+                                ))}
+                                {uniqueExposures.length > 0 && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      className="btn"
+                                      style={{ minBlockSize: 24, padding: "2px 6px", fontSize: 11 }}
+                                      popoverTarget={popoverId}
+                                      aria-label={`Show all ${uniqueExposures.length} harnesses for ${skill.name}`}
+                                    >
+                                      {uniqueExposures.length > 5 ? (
+                                        <>
+                                          <span>+{uniqueExposures.length - 5}</span>
+                                          <ChevronDown size={11} aria-hidden="true" />
+                                        </>
+                                      ) : (
+                                        <ChevronDown size={11} aria-hidden="true" />
+                                      )}
+                                    </button>
+                                    <div id={popoverId} popover="auto" className="harness-popover">
+                                      <div className="nav-group-label" style={{ padding: 0 }}>
+                                        {skill.name} — Harnesses ({skill.exposures.length})
+                                      </div>
+                                      <ul className="harness-popover-list">
+                                        {skill.exposures.map((exp, idx) => (
+                                          <li key={idx} className="harness-popover-item">
+                                            <span
+                                              style={{
+                                                display: "inline-flex",
+                                                alignItems: "center",
+                                                gap: 7,
+                                              }}
+                                            >
+                                              <HarnessIcon harnessId={exp.harnessId} size={13} />
+                                              <span>{exp.harnessId}</span>
+                                            </span>
+                                            <span
+                                              className={`badge ${
+                                                exp.linkType === "symlink-broken" ? "danger" : ""
+                                              }`}
+                                            >
+                                              {exp.scope}:
+                                              {exp.linkType === "physical-copy"
+                                                ? "copy"
+                                                : exp.linkType === "symlink-broken"
+                                                  ? "broken"
+                                                  : "link"}
+                                            </span>
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    </div>
+                                  </>
+                                )}
+                              </div>
+                            </td>
+                            <td className="mono num">{skill.tokens.descriptionTokens}</td>
+                            <td className="mono num">{skill.tokens.fullTokens}</td>
+                            <td className="mono num">{skill.projectCount}</td>
+                            <td
+                              className="sticky-actions-col"
+                              onClick={(e) => e.stopPropagation()}
+                              style={{ textAlign: "right" }}
+                            >
+                              <ActionMenu
+                                label={`Actions for ${skill.name}`}
+                                items={[
+                                  {
+                                    id: "inspect",
+                                    label: "Inspect details",
+                                    icon: <FileText size={13} />,
+                                    onSelect: () => setSelectedSkillId(skill.id),
+                                  },
+                                  {
+                                    id: "upgrade",
+                                    label: "Upgrade",
+                                    icon: <ArrowUpCircle size={13} />,
+                                    onSelect: () => void openUpgradePreview("skill", skill.id),
+                                  },
+                                  ...(skill.provenance.owningManager !== "apm"
+                                    ? [
+                                        {
+                                          id: "migrate",
+                                          label: "Migrate to APM",
+                                          icon: <Boxes size={13} />,
+                                          onSelect: () => void openMigratePreview([skill.id]),
+                                        },
+                                      ]
+                                    : []),
+                                  {
+                                    id: "remove",
+                                    label: "Remove",
+                                    icon: <Trash2 size={13} />,
+                                    tone: "danger" as const,
+                                    separatorBefore: true,
+                                    onSelect: () => void openRemovePreview(skill),
+                                  },
+                                ]}
+                              />
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {filteredSkills.length > PAGE_SIZE && (
+                <div className="pagination-bar">
+                  <span className="mono" style={{ color: "var(--muted)" }}>
+                    {showAll
+                      ? `Showing all ${filteredSkills.length} skills`
+                      : `Showing ${safePage * PAGE_SIZE + 1}–${Math.min(
+                          (safePage + 1) * PAGE_SIZE,
+                          filteredSkills.length,
+                        )} of ${filteredSkills.length}`}
+                  </span>
+                  <div className="toolbar">
+                    {!showAll && (
+                      <>
+                        <button
+                          type="button"
+                          className="btn"
+                          disabled={safePage === 0}
+                          onClick={() => setPage((p) => Math.max(0, p - 1))}
+                        >
+                          Prev
+                        </button>
+                        <button
+                          type="button"
+                          className="btn"
+                          disabled={safePage >= pageCount - 1}
+                          onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+                        >
+                          Next
+                        </button>
+                      </>
+                    )}
                     <button
                       type="button"
-                      role="tab"
-                      aria-selected={inspectorTab === "overview"}
-                      className="underline-tab"
-                      onClick={() => setInspectorTab("overview")}
+                      className="btn"
+                      aria-pressed={showAll}
+                      onClick={() => setShowAll((s) => !s)}
                     >
-                      <Layers size={13} aria-hidden="true" />
-                      <span>Overview</span>
-                    </button>
-                    <button
-                      type="button"
-                      role="tab"
-                      aria-selected={inspectorTab === "markdown"}
-                      className="underline-tab"
-                      onClick={() => setInspectorTab("markdown")}
-                    >
-                      <FileText size={13} aria-hidden="true" />
-                      <span>SKILL.md</span>
+                      {showAll ? "Paginate (50)" : "Show All"}
                     </button>
                   </div>
+                </div>
+              )}
+            </div>
 
-                  {inspectorTab === "overview" ? (
-                    <>
-                      <div style={{ color: "var(--muted)", fontSize: 12.5 }}>
-                        {selectedSkill.description || "No description provided in SKILL.md."}
+            {selectedSkill && (
+              <section
+                className="panel"
+                aria-labelledby="detail-heading"
+                style={{ display: "grid", gap: 14 }}
+              >
+                <div className="topbar" style={{ paddingBottom: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() =>
+                        navigateWithTransition(() => setSelectedSkillId(null), "list-heading")
+                      }
+                    >
+                      <ArrowLeft size={13} aria-hidden="true" />
+                      <span>Skills</span>
+                    </button>
+                    <div style={{ minWidth: 0 }}>
+                      <h1
+                        id="detail-heading"
+                        tabIndex={-1}
+                        className="detail-heading"
+                        style={{ margin: 0, fontSize: 18 }}
+                      >
+                        {selectedSkill.name}
+                      </h1>
+                      <div className="mono" style={{ color: "var(--muted)", fontSize: 12 }}>
+                        {selectedSkill.id}
                       </div>
+                    </div>
+                  </div>
+                  <div className="toolbar">
+                    {skillContent?.skillsShUrl && (
+                      <a
+                        href={skillContent.skillsShUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-link"
+                      >
+                        <span>skills.sh</span>
+                        <ExternalLink size={12} aria-hidden="true" />
+                      </a>
+                    )}
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => void openUpgradePreview("skill", selectedSkill.id)}
+                    >
+                      <ArrowUpCircle size={13} aria-hidden="true" />
+                      <span>Upgrade</span>
+                    </button>
+                    {selectedSkill.provenance.owningManager !== "apm" && (
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => void openMigratePreview([selectedSkill.id])}
+                      >
+                        <Boxes size={13} aria-hidden="true" />
+                        <span>Migrate to APM</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="btn danger"
+                      onClick={() => void openRemovePreview(selectedSkill)}
+                    >
+                      <Trash2 size={13} aria-hidden="true" />
+                      <span>Remove</span>
+                    </button>
+                  </div>
+                </div>
 
-                      <div>
-                        <div className="nav-group-label" style={{ padding: 0 }}>
-                          Token Breakdown
-                        </div>
-                        <div className="mono">
-                          desc: {selectedSkill.tokens.descriptionTokens} · fm:{" "}
-                          {selectedSkill.tokens.frontmatterTokens} · body:{" "}
-                          {selectedSkill.tokens.bodyTokens} · full:{" "}
-                          {selectedSkill.tokens.fullTokens}
-                        </div>
+                <div className="underline-tabs" role="tablist" aria-label="Inspector tabs">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={inspectorTab === "overview"}
+                    className="underline-tab"
+                    onClick={() => setInspectorTab("overview")}
+                  >
+                    <Layers size={13} aria-hidden="true" />
+                    <span>Overview</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={inspectorTab === "markdown"}
+                    className="underline-tab"
+                    onClick={() => setInspectorTab("markdown")}
+                  >
+                    <FileText size={13} aria-hidden="true" />
+                    <span>SKILL.md</span>
+                  </button>
+                </div>
+
+                {inspectorTab === "overview" ? (
+                  <>
+                    <div style={{ color: "var(--muted)", fontSize: 12.5 }}>
+                      {selectedSkill.description || "No description provided in SKILL.md."}
+                    </div>
+
+                    <div>
+                      <div className="nav-group-label" style={{ padding: 0 }}>
+                        Token Breakdown
                       </div>
-
-                      <div>
-                        <div className="nav-group-label" style={{ padding: 0 }}>
-                          Latest Activation
-                        </div>
-                        <div className="mono" style={{ color: "var(--muted)" }}>
-                          {selectedSkill.usage
-                            ? `${selectedSkill.usage.activationCount} session(s) · last ${
-                                selectedSkill.usage.lastUsedAt
-                                  ? new Date(selectedSkill.usage.lastUsedAt).toLocaleString()
-                                  : "unknown"
-                              } (${selectedSkill.usage.lastHarness ?? "unknown"})`
-                            : "No recent activations found in session logs"}
-                        </div>
+                      <div className="mono">
+                        desc: {selectedSkill.tokens.descriptionTokens} · fm:{" "}
+                        {selectedSkill.tokens.frontmatterTokens} · body:{" "}
+                        {selectedSkill.tokens.bodyTokens} · full: {selectedSkill.tokens.fullTokens}
                       </div>
+                    </div>
 
-                      {(selectedSkill.driftDetails || selectedSkill.duplicates) && (
+                    <div>
+                      <div className="nav-group-label" style={{ padding: 0 }}>
+                        Latest Activation
+                      </div>
+                      <div className="mono" style={{ color: "var(--muted)" }}>
+                        {selectedSkill.usage
+                          ? `${selectedSkill.usage.activationCount} session(s) · last ${
+                              selectedSkill.usage.lastUsedAt
+                                ? new Date(selectedSkill.usage.lastUsedAt).toLocaleString()
+                                : "unknown"
+                            } (${selectedSkill.usage.lastHarness ?? "unknown"})`
+                          : "No recent activations found in session logs"}
+                      </div>
+                    </div>
+
+                    {(selectedSkill.driftDetails || selectedSkill.duplicates) && (
+                      <div
+                        className="panel"
+                        style={{
+                          padding: 12,
+                          borderColor: "var(--warning, #d97706)",
+                          background: "color-mix(in srgb, var(--surface) 88%, #d97706 12%)",
+                          display: "grid",
+                          gap: 10,
+                        }}
+                      >
                         <div
-                          className="panel"
                           style={{
-                            padding: 12,
-                            borderColor: "var(--warning, #d97706)",
-                            background: "color-mix(in srgb, var(--surface) 88%, #d97706 12%)",
-                            display: "grid",
-                            gap: 10,
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            gap: 8,
+                            flexWrap: "wrap",
                           }}
                         >
                           <div
                             style={{
                               display: "flex",
                               alignItems: "center",
-                              justifyContent: "space-between",
                               gap: 8,
                               flexWrap: "wrap",
                             }}
                           >
-                            <div
-                              style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: 8,
-                                flexWrap: "wrap",
-                              }}
-                            >
-                              <AlertTriangle size={14} aria-hidden="true" />
-                              <strong>Drift &amp; Conflict Diagnostics</strong>
-                              {selectedSkill.driftDetails?.reasons.map((r) => (
-                                <span key={r} className="badge warn">
-                                  {r.replace(/-/g, " ")}
-                                </span>
-                              ))}
-                              {selectedSkill.duplicates?.reasons.map((r) => (
-                                <span key={`dup-${r}`} className="badge warn">
-                                  {r.replace(/-/g, " ")}
-                                </span>
-                              ))}
-                            </div>
-                            {selectedSkill.driftDetails?.hasGlobalAndProject && (
-                              <button
-                                type="button"
-                                className="btn danger"
-                                style={{ padding: "3px 8px", fontSize: 11 }}
-                                onClick={() => void openRemovePreview(selectedSkill, "project")}
-                              >
-                                <Trash2 size={11} aria-hidden="true" />
-                                <span>Remove Project Copies</span>
-                              </button>
-                            )}
-                          </div>
-
-                          {selectedSkill.driftDetails && (
-                            <div style={{ fontSize: 12, color: "var(--muted)" }}>
-                              {selectedSkill.driftDetails.summary} · Managers:{" "}
-                              <span className="mono">
-                                {selectedSkill.driftDetails.managers.join(", ")}
+                            <AlertTriangle size={14} aria-hidden="true" />
+                            <strong>Drift &amp; Conflict Diagnostics</strong>
+                            {selectedSkill.driftDetails?.reasons.map((r) => (
+                              <span key={r} className="badge warn">
+                                {r.replace(/-/g, " ")}
                               </span>
-                            </div>
+                            ))}
+                            {selectedSkill.duplicates?.reasons.map((r) => (
+                              <span key={`dup-${r}`} className="badge warn">
+                                {r.replace(/-/g, " ")}
+                              </span>
+                            ))}
+                          </div>
+                          {selectedSkill.driftDetails?.hasGlobalAndProject && (
+                            <button
+                              type="button"
+                              className="btn danger"
+                              style={{ padding: "3px 8px", fontSize: 11 }}
+                              onClick={() => void openRemovePreview(selectedSkill, "project")}
+                            >
+                              <Trash2 size={11} aria-hidden="true" />
+                              <span>Remove Project Copies</span>
+                            </button>
                           )}
-
-                          {selectedSkill.duplicates &&
-                            selectedSkill.duplicates.siblingIds.length > 0 && (
-                              <div style={{ display: "grid", gap: 6, fontSize: 12 }}>
-                                <div className="nav-group-label" style={{ padding: 0 }}>
-                                  Duplicate Siblings ({selectedSkill.duplicates.siblingIds.length})
-                                </div>
-                                {selectedSkill.duplicates.siblingIds.map((sibId, idx) => {
-                                  const sibling = data?.snapshot.skills.find((s) => s.id === sibId);
-                                  const sibName =
-                                    sibling?.name ??
-                                    selectedSkill.duplicates?.siblingNames[idx] ??
-                                    sibId;
-                                  return (
-                                    <div
-                                      key={sibId}
-                                      style={{
-                                        display: "flex",
-                                        alignItems: "center",
-                                        justifyContent: "space-between",
-                                        gap: 8,
-                                        padding: "5px 8px",
-                                        borderRadius: 4,
-                                        background: "var(--bg)",
-                                      }}
-                                    >
-                                      <span
-                                        style={{
-                                          display: "inline-flex",
-                                          alignItems: "center",
-                                          gap: 6,
-                                          flexWrap: "wrap",
-                                        }}
-                                      >
-                                        <strong>{sibName}</strong>
-                                        {sibling && (
-                                          <>
-                                            <span className="badge">
-                                              {sibling.provenance.owningManager}
-                                            </span>
-                                            {renderScopeBadges(sibling)}
-                                          </>
-                                        )}
-                                      </span>
-                                      <ActionMenu
-                                        label={`Actions for ${sibId}`}
-                                        items={[
-                                          {
-                                            id: "inspect",
-                                            label: "Inspect skill",
-                                            icon: <FileText size={13} />,
-                                            onSelect: () => setSelectedSkillId(sibId),
-                                          },
-                                          ...(sibling
-                                            ? [
-                                                {
-                                                  id: "remove",
-                                                  label: "Remove copy",
-                                                  icon: <Trash2 size={13} />,
-                                                  tone: "danger" as const,
-                                                  separatorBefore: true,
-                                                  onSelect: () => void openRemovePreview(sibling),
-                                                },
-                                              ]
-                                            : []),
-                                        ]}
-                                      />
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            )}
-
-                          {selectedSkill.driftDetails &&
-                            selectedSkill.driftDetails.copies.length > 0 &&
-                            (() => {
-                              const byPath = new Map<
-                                string,
-                                {
-                                  copy: (typeof selectedSkill.driftDetails.copies)[number];
-                                  harnesses: string[];
-                                }
-                              >();
-                              for (const c of selectedSkill.driftDetails.copies) {
-                                const existing = byPath.get(c.path);
-                                if (existing) {
-                                  if (!existing.harnesses.includes(c.harnessId)) {
-                                    existing.harnesses.push(c.harnessId);
-                                  }
-                                } else {
-                                  byPath.set(c.path, { copy: c, harnesses: [c.harnessId] });
-                                }
-                              }
-                              const uniqueCopies = Array.from(byPath.values());
-                              const canRemoveScope =
-                                (selectedSkill.driftDetails?.physicalCopies ?? 0) > 1 &&
-                                ["apm", "npx-skills", "claude-plugin", "gemini-extension"].includes(
-                                  selectedSkill.provenance.owningManager,
-                                );
-                              return (
-                                <div style={{ display: "grid", gap: 4 }}>
-                                  <div className="nav-group-label" style={{ padding: 0 }}>
-                                    Detected Copies ({uniqueCopies.length} path
-                                    {uniqueCopies.length === 1 ? "" : "s"} ·{" "}
-                                    {selectedSkill.driftDetails.copies.length} exposures)
-                                  </div>
-                                  {uniqueCopies.map(({ copy, harnesses }) => (
-                                    <div
-                                      key={copy.path}
-                                      style={{
-                                        display: "flex",
-                                        alignItems: "center",
-                                        justifyContent: "space-between",
-                                        gap: 8,
-                                        fontSize: 11,
-                                        padding: "4px 6px",
-                                        borderRadius: 4,
-                                        background: "var(--bg)",
-                                      }}
-                                    >
-                                      <span
-                                        style={{
-                                          display: "inline-flex",
-                                          alignItems: "center",
-                                          gap: 6,
-                                          minWidth: 0,
-                                          flexWrap: "wrap",
-                                        }}
-                                      >
-                                        {harnesses.slice(0, 3).map((hId) => (
-                                          <HarnessIcon key={hId} harnessId={hId} size={11} />
-                                        ))}
-                                        {harnesses.length > 3 && (
-                                          <span className="badge">+{harnesses.length - 3}</span>
-                                        )}
-                                        <span
-                                          className="badge"
-                                          title={
-                                            copy.scope === "global"
-                                              ? "User / global scope"
-                                              : "Project scope"
-                                          }
-                                        >
-                                          {copy.scope === "global" ? (
-                                            <Globe size={10} aria-hidden="true" />
-                                          ) : (
-                                            <FolderGit2 size={10} aria-hidden="true" />
-                                          )}
-                                        </span>
-                                        <span
-                                          className={`badge ${copy.linkType === "symlink-broken" ? "danger" : ""}`}
-                                          title={
-                                            copy.linkType === "physical-copy"
-                                              ? "Physical copy"
-                                              : copy.linkType === "symlink-broken"
-                                                ? "Broken symlink"
-                                                : "Healthy symlink"
-                                          }
-                                        >
-                                          <LinkTypeIcon linkType={copy.linkType} size={10} />
-                                        </span>
-                                        <span className={`badge ${copy.isUnmanaged ? "warn" : ""}`}>
-                                          {copy.manager ?? "unmanaged"}
-                                        </span>
-                                        {copy.differsFromGlobalManager && (
-                                          <span
-                                            className="badge warn"
-                                            title="Managed by a different CLI than the global copy"
-                                          >
-                                            diff mgr
-                                          </span>
-                                        )}
-                                        {copy.relativeToGlobal && (
-                                          <span
-                                            className={`badge ${
-                                              copy.relativeToGlobal === "same"
-                                                ? ""
-                                                : copy.relativeToGlobal === "newer"
-                                                  ? "ok"
-                                                  : "warn"
-                                            }`}
-                                            title={`Relative to global copy: ${copy.relativeToGlobal}`}
-                                          >
-                                            {copy.relativeToGlobal === "same" ? (
-                                              <Check size={10} aria-hidden="true" />
-                                            ) : copy.relativeToGlobal === "newer" ? (
-                                              <ArrowUp size={10} aria-hidden="true" />
-                                            ) : copy.relativeToGlobal === "older" ? (
-                                              <ArrowDown size={10} aria-hidden="true" />
-                                            ) : (
-                                              <GitCompare size={10} aria-hidden="true" />
-                                            )}
-                                            <span>{copy.relativeToGlobal}</span>
-                                          </span>
-                                        )}
-                                        {copy.version && (
-                                          <span className="badge">v{copy.version}</span>
-                                        )}
-                                        {copy.modifiedAt && (
-                                          <span className="mono" style={{ color: "var(--muted)" }}>
-                                            {new Date(copy.modifiedAt).toLocaleDateString()}
-                                          </span>
-                                        )}
-                                        {copy.contentHash && (
-                                          <span className="mono" style={{ color: "var(--muted)" }}>
-                                            #{copy.contentHash.slice(0, 8)}
-                                          </span>
-                                        )}
-                                      </span>
-                                      <span
-                                        style={{
-                                          display: "inline-flex",
-                                          alignItems: "center",
-                                          gap: 8,
-                                          minWidth: 0,
-                                        }}
-                                      >
-                                        <CopyableText text={copy.path} maxWidth={280} />
-                                        {canRemoveScope && (
-                                          <button
-                                            type="button"
-                                            className="btn danger"
-                                            style={{ padding: "2px 6px", fontSize: 10 }}
-                                            onClick={() =>
-                                              void openRemoveExposurePreview(
-                                                selectedSkill,
-                                                copy.path,
-                                              )
-                                            }
-                                          >
-                                            <Trash2 size={10} aria-hidden="true" />
-                                            <span>Remove Scope</span>
-                                          </button>
-                                        )}
-                                      </span>
-                                    </div>
-                                  ))}
-                                </div>
-                              );
-                            })()}
                         </div>
-                      )}
 
-                      <div>
-                        <div className="nav-group-label" style={{ padding: 0, marginBottom: 6 }}>
-                          Installed On ({selectedSkill.exposures.length})
-                        </div>
-                        {(["global", "project"] as const).map((scopeKey) => {
-                          const scopeItems = selectedSkill.exposures.filter(
-                            (e) => e.scope === scopeKey,
-                          );
-                          if (scopeItems.length === 0) return null;
-                          return (
-                            <div key={scopeKey} style={{ marginBottom: 10 }}>
-                              <div
-                                style={{
-                                  display: "inline-flex",
-                                  alignItems: "center",
-                                  gap: 5,
-                                  fontSize: 11,
-                                  fontWeight: 600,
-                                  color: "var(--muted)",
-                                  textTransform: "uppercase",
-                                  letterSpacing: "0.04em",
-                                  marginBottom: 4,
-                                }}
-                              >
-                                {scopeKey === "global" ? (
-                                  <Globe size={11} aria-hidden="true" />
-                                ) : (
-                                  <FolderGit2 size={11} aria-hidden="true" />
-                                )}
-                                <span>
-                                  {scopeKey === "global" ? "Global" : "Project"} (
-                                  {scopeItems.length})
-                                </span>
+                        {selectedSkill.driftDetails && (
+                          <div style={{ fontSize: 12, color: "var(--muted)" }}>
+                            {selectedSkill.driftDetails.summary} · Managers:{" "}
+                            <span className="mono">
+                              {selectedSkill.driftDetails.managers.join(", ")}
+                            </span>
+                          </div>
+                        )}
+
+                        {selectedSkill.duplicates &&
+                          selectedSkill.duplicates.siblingIds.length > 0 && (
+                            <div style={{ display: "grid", gap: 6, fontSize: 12 }}>
+                              <div className="nav-group-label" style={{ padding: 0 }}>
+                                Duplicate Siblings ({selectedSkill.duplicates.siblingIds.length})
                               </div>
-                              <div style={{ display: "grid", gap: 4 }}>
-                                {scopeItems.map((exp, i) => {
-                                  const linkLabel =
-                                    exp.linkType === "physical-copy"
-                                      ? "copy"
-                                      : exp.linkType === "symlink-broken"
-                                        ? "broken"
-                                        : "symlink";
-                                  return (
-                                    <div
-                                      key={`${exp.harnessId}-${exp.path}-${i}`}
-                                      className="panel"
+                              {selectedSkill.duplicates.siblingIds.map((sibId, idx) => {
+                                const sibling = data?.snapshot.skills.find((s) => s.id === sibId);
+                                const sibName =
+                                  sibling?.name ??
+                                  selectedSkill.duplicates?.siblingNames[idx] ??
+                                  sibId;
+                                return (
+                                  <div
+                                    key={sibId}
+                                    style={{
+                                      display: "flex",
+                                      alignItems: "center",
+                                      justifyContent: "space-between",
+                                      gap: 8,
+                                      padding: "5px 8px",
+                                      borderRadius: 4,
+                                      background: "var(--bg)",
+                                    }}
+                                  >
+                                    <span
                                       style={{
-                                        padding: "6px 10px",
-                                        display: "flex",
+                                        display: "inline-flex",
                                         alignItems: "center",
-                                        justifyContent: "space-between",
-                                        gap: 8,
+                                        gap: 6,
                                         flexWrap: "wrap",
                                       }}
                                     >
+                                      <strong>{sibName}</strong>
+                                      {sibling && (
+                                        <>
+                                          <span className="badge">
+                                            {sibling.provenance.owningManager}
+                                          </span>
+                                          {renderScopeBadges(sibling)}
+                                        </>
+                                      )}
+                                    </span>
+                                    <ActionMenu
+                                      label={`Actions for ${sibId}`}
+                                      items={[
+                                        {
+                                          id: "inspect",
+                                          label: "Inspect skill",
+                                          icon: <FileText size={13} />,
+                                          onSelect: () => setSelectedSkillId(sibId),
+                                        },
+                                        ...(sibling
+                                          ? [
+                                              {
+                                                id: "remove",
+                                                label: "Remove copy",
+                                                icon: <Trash2 size={13} />,
+                                                tone: "danger" as const,
+                                                separatorBefore: true,
+                                                onSelect: () => void openRemovePreview(sibling),
+                                              },
+                                            ]
+                                          : []),
+                                      ]}
+                                    />
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+
+                        {selectedSkill.driftDetails &&
+                          selectedSkill.driftDetails.copies.length > 0 &&
+                          (() => {
+                            const byPath = new Map<
+                              string,
+                              {
+                                copy: (typeof selectedSkill.driftDetails.copies)[number];
+                                harnesses: string[];
+                              }
+                            >();
+                            for (const c of selectedSkill.driftDetails.copies) {
+                              const existing = byPath.get(c.path);
+                              if (existing) {
+                                if (!existing.harnesses.includes(c.harnessId)) {
+                                  existing.harnesses.push(c.harnessId);
+                                }
+                              } else {
+                                byPath.set(c.path, { copy: c, harnesses: [c.harnessId] });
+                              }
+                            }
+                            const uniqueCopies = Array.from(byPath.values());
+                            const canRemoveScope =
+                              (selectedSkill.driftDetails?.physicalCopies ?? 0) > 1 &&
+                              ["apm", "npx-skills", "claude-plugin", "gemini-extension"].includes(
+                                selectedSkill.provenance.owningManager,
+                              );
+                            return (
+                              <div style={{ display: "grid", gap: 4 }}>
+                                <div className="nav-group-label" style={{ padding: 0 }}>
+                                  Detected Copies ({uniqueCopies.length} path
+                                  {uniqueCopies.length === 1 ? "" : "s"} ·{" "}
+                                  {selectedSkill.driftDetails.copies.length} exposures)
+                                </div>
+                                {uniqueCopies.map(({ copy, harnesses }) => (
+                                  <div
+                                    key={copy.path}
+                                    style={{
+                                      display: "flex",
+                                      alignItems: "center",
+                                      justifyContent: "space-between",
+                                      gap: 8,
+                                      fontSize: 11,
+                                      padding: "4px 6px",
+                                      borderRadius: 4,
+                                      background: "var(--bg)",
+                                    }}
+                                  >
+                                    <span
+                                      style={{
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        gap: 6,
+                                        minWidth: 0,
+                                        flexWrap: "wrap",
+                                      }}
+                                    >
+                                      {harnesses.slice(0, 3).map((hId) => (
+                                        <HarnessIcon key={hId} harnessId={hId} size={11} />
+                                      ))}
+                                      {harnesses.length > 3 && (
+                                        <span className="badge">+{harnesses.length - 3}</span>
+                                      )}
                                       <span
-                                        style={{
-                                          display: "inline-flex",
-                                          alignItems: "center",
-                                          gap: 6,
-                                        }}
+                                        className="badge"
+                                        title={
+                                          copy.scope === "global"
+                                            ? "User / global scope"
+                                            : "Project scope"
+                                        }
                                       >
-                                        <HarnessIcon harnessId={exp.harnessId} size={13} />
-                                        <strong style={{ fontSize: 12.5 }}>{exp.harnessId}</strong>
-                                        {exp.profile && (
-                                          <span className="badge">{exp.profile}</span>
+                                        {copy.scope === "global" ? (
+                                          <Globe size={10} aria-hidden="true" />
+                                        ) : (
+                                          <FolderGit2 size={10} aria-hidden="true" />
                                         )}
+                                      </span>
+                                      <span
+                                        className={`badge ${copy.linkType === "symlink-broken" ? "danger" : ""}`}
+                                        title={
+                                          copy.linkType === "physical-copy"
+                                            ? "Physical copy"
+                                            : copy.linkType === "symlink-broken"
+                                              ? "Broken symlink"
+                                              : "Healthy symlink"
+                                        }
+                                      >
+                                        <LinkTypeIcon linkType={copy.linkType} size={10} />
+                                      </span>
+                                      <span className={`badge ${copy.isUnmanaged ? "warn" : ""}`}>
+                                        {copy.manager ?? "unmanaged"}
+                                      </span>
+                                      {copy.differsFromGlobalManager && (
+                                        <span
+                                          className="badge warn"
+                                          title="Managed by a different CLI than the global copy"
+                                        >
+                                          diff mgr
+                                        </span>
+                                      )}
+                                      {copy.relativeToGlobal && (
                                         <span
                                           className={`badge ${
-                                            exp.linkType === "symlink-broken"
-                                              ? "danger"
-                                              : exp.linkType === "physical-copy"
-                                                ? "warn"
-                                                : "ok"
+                                            copy.relativeToGlobal === "same"
+                                              ? ""
+                                              : copy.relativeToGlobal === "newer"
+                                                ? "ok"
+                                                : "warn"
                                           }`}
+                                          title={`Relative to global copy: ${copy.relativeToGlobal}`}
                                         >
-                                          <LinkTypeIcon linkType={exp.linkType} size={10} />
-                                          <span>{linkLabel}</span>
+                                          {copy.relativeToGlobal === "same" ? (
+                                            <Check size={10} aria-hidden="true" />
+                                          ) : copy.relativeToGlobal === "newer" ? (
+                                            <ArrowUp size={10} aria-hidden="true" />
+                                          ) : copy.relativeToGlobal === "older" ? (
+                                            <ArrowDown size={10} aria-hidden="true" />
+                                          ) : (
+                                            <GitCompare size={10} aria-hidden="true" />
+                                          )}
+                                          <span>{copy.relativeToGlobal}</span>
                                         </span>
-                                      </span>
-                                      <span
-                                        style={{
-                                          display: "inline-flex",
-                                          alignItems: "center",
-                                          gap: 6,
-                                          minWidth: 0,
-                                        }}
-                                      >
-                                        <CopyableText text={exp.path} maxWidth={260} />
+                                      )}
+                                      {copy.version && (
+                                        <span className="badge">v{copy.version}</span>
+                                      )}
+                                      {copy.modifiedAt && (
+                                        <span className="mono" style={{ color: "var(--muted)" }}>
+                                          {new Date(copy.modifiedAt).toLocaleDateString()}
+                                        </span>
+                                      )}
+                                      {copy.contentHash && (
+                                        <span className="mono" style={{ color: "var(--muted)" }}>
+                                          #{copy.contentHash.slice(0, 8)}
+                                        </span>
+                                      )}
+                                    </span>
+                                    <span
+                                      style={{
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        gap: 8,
+                                        minWidth: 0,
+                                      }}
+                                    >
+                                      <CopyableText text={copy.path} maxWidth={280} />
+                                      {canRemoveScope && (
                                         <button
                                           type="button"
-                                          className="icon-ghost-btn"
-                                          title={`Open in Finder: ${exp.path}`}
-                                          aria-label={`Open in Finder: ${exp.path}`}
-                                          onClick={() => void client.revealPath(exp.path)}
+                                          className="btn danger"
+                                          style={{ padding: "2px 6px", fontSize: 10 }}
+                                          onClick={() =>
+                                            void openRemoveExposurePreview(selectedSkill, copy.path)
+                                          }
                                         >
-                                          <FolderOpen size={12} aria-hidden="true" />
+                                          <Trash2 size={10} aria-hidden="true" />
+                                          <span>Remove Scope</span>
                                         </button>
-                                      </span>
-                                    </div>
-                                  );
-                                })}
+                                      )}
+                                    </span>
+                                  </div>
+                                ))}
                               </div>
-                            </div>
-                          );
-                        })}
+                            );
+                          })()}
                       </div>
+                    )}
 
-                      {selectedSkill.projectPaths.length > 0 && (
-                        <div>
-                          <div className="nav-group-label" style={{ padding: 0 }}>
-                            Projects ({selectedSkill.projectCount})
-                          </div>
-                          {selectedSkill.projectPaths.map((p) => (
-                            <div key={p} style={{ marginTop: 2 }}>
-                              <CopyableText text={p} maxWidth="100%" />
+                    <div>
+                      <div className="nav-group-label" style={{ padding: 0, marginBottom: 6 }}>
+                        Installed On ({selectedSkill.exposures.length})
+                      </div>
+                      {(["global", "project"] as const).map((scopeKey) => {
+                        const scopeItems = selectedSkill.exposures.filter(
+                          (e) => e.scope === scopeKey,
+                        );
+                        if (scopeItems.length === 0) return null;
+                        return (
+                          <div key={scopeKey} style={{ marginBottom: 10 }}>
+                            <div
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 5,
+                                fontSize: 11,
+                                fontWeight: 600,
+                                color: "var(--muted)",
+                                textTransform: "uppercase",
+                                letterSpacing: "0.04em",
+                                marginBottom: 4,
+                              }}
+                            >
+                              {scopeKey === "global" ? (
+                                <Globe size={11} aria-hidden="true" />
+                              ) : (
+                                <FolderGit2 size={11} aria-hidden="true" />
+                              )}
+                              <span>
+                                {scopeKey === "global" ? "Global" : "Project"} ({scopeItems.length})
+                              </span>
                             </div>
-                          ))}
-                        </div>
-                      )}
+                            <div style={{ display: "grid", gap: 4 }}>
+                              {scopeItems.map((exp, i) => {
+                                const linkLabel =
+                                  exp.linkType === "physical-copy"
+                                    ? "copy"
+                                    : exp.linkType === "symlink-broken"
+                                      ? "broken"
+                                      : "symlink";
+                                return (
+                                  <div
+                                    key={`${exp.harnessId}-${exp.path}-${i}`}
+                                    className="panel"
+                                    style={{
+                                      padding: "6px 10px",
+                                      display: "flex",
+                                      alignItems: "center",
+                                      justifyContent: "space-between",
+                                      gap: 8,
+                                      flexWrap: "wrap",
+                                    }}
+                                  >
+                                    <span
+                                      style={{
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        gap: 6,
+                                      }}
+                                    >
+                                      <HarnessIcon harnessId={exp.harnessId} size={13} />
+                                      <strong style={{ fontSize: 12.5 }}>{exp.harnessId}</strong>
+                                      {exp.profile && <span className="badge">{exp.profile}</span>}
+                                      <span
+                                        className={`badge ${
+                                          exp.linkType === "symlink-broken"
+                                            ? "danger"
+                                            : exp.linkType === "physical-copy"
+                                              ? "warn"
+                                              : "ok"
+                                        }`}
+                                      >
+                                        <LinkTypeIcon linkType={exp.linkType} size={10} />
+                                        <span>{linkLabel}</span>
+                                      </span>
+                                    </span>
+                                    <span
+                                      style={{
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        gap: 6,
+                                        minWidth: 0,
+                                      }}
+                                    >
+                                      <CopyableText text={exp.path} maxWidth={260} />
+                                      <button
+                                        type="button"
+                                        className="icon-ghost-btn"
+                                        title={`Open in Finder: ${exp.path}`}
+                                        aria-label={`Open in Finder: ${exp.path}`}
+                                        onClick={() => void client.revealPath(exp.path)}
+                                      >
+                                        <FolderOpen size={12} aria-hidden="true" />
+                                      </button>
+                                    </span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
 
-                      <div className="toolbar">
+                    {selectedSkill.projectPaths.length > 0 && (
+                      <div>
+                        <div className="nav-group-label" style={{ padding: 0 }}>
+                          Projects ({selectedSkill.projectCount})
+                        </div>
+                        {selectedSkill.projectPaths.map((p) => (
+                          <div key={p} style={{ marginTop: 2 }}>
+                            <CopyableText text={p} maxWidth="100%" />
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="toolbar">
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => void openUpgradePreview("skill", selectedSkill.id)}
+                      >
+                        <ArrowUpCircle size={12} aria-hidden="true" />
+                        <span>Upgrade</span>
+                      </button>
+                      {selectedSkill.provenance.owningManager !== "apm" && (
                         <button
                           type="button"
                           className="btn"
-                          onClick={() => void openUpgradePreview("skill", selectedSkill.id)}
+                          onClick={() => void openMigratePreview([selectedSkill.id])}
                         >
-                          <ArrowUpCircle size={12} aria-hidden="true" />
-                          <span>Upgrade</span>
+                          <span>Migrate to APM</span>
                         </button>
-                        {selectedSkill.provenance.owningManager !== "apm" && (
-                          <button
-                            type="button"
-                            className="btn"
-                            onClick={() => void openMigratePreview([selectedSkill.id])}
-                          >
-                            <span>Migrate to APM</span>
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          className="btn danger"
-                          onClick={() => void openRemovePreview(selectedSkill)}
-                        >
-                          <Trash2 size={12} aria-hidden="true" />
-                          <span>Remove</span>
-                        </button>
-                      </div>
-                    </>
-                  ) : (
-                    <div>
-                      {contentLoading && <div className="skeleton-row" />}
-                      {!contentLoading && skillContent && (
-                        <>
-                          <div style={{ marginBottom: 8, fontSize: 11 }}>
-                            <CopyableText text={skillContent.skillFilePath} maxWidth="100%" />
-                          </div>
+                      )}
+                      <button
+                        type="button"
+                        className="btn danger"
+                        onClick={() => void openRemovePreview(selectedSkill)}
+                      >
+                        <Trash2 size={12} aria-hidden="true" />
+                        <span>Remove</span>
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div>
+                    {contentLoading && <div className="skeleton-row" />}
+                    {!contentLoading && skillContent && (
+                      <>
+                        <div style={{ marginBottom: 8, fontSize: 11 }}>
+                          <CopyableText text={skillContent.skillFilePath} maxWidth="100%" />
+                        </div>
+                        <Suspense fallback={<div className="skeleton-row" />}>
                           <MarkdownViewer
                             content={skillContent.bodyRaw || skillContent.rawContent}
                           />
-                        </>
-                      )}
-                      {!contentLoading && !skillContent && (
-                        <div style={{ color: "var(--muted)" }}>
-                          Could not load SKILL.md content for this skill.
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
-            </dialog>
-
-            {filteredSkills.length > PAGE_SIZE && (
-              <div className="pagination-bar">
-                <span className="mono" style={{ color: "var(--muted)" }}>
-                  {showAll
-                    ? `Showing all ${filteredSkills.length} skills`
-                    : `Showing ${safePage * PAGE_SIZE + 1}–${Math.min(
-                        (safePage + 1) * PAGE_SIZE,
-                        filteredSkills.length,
-                      )} of ${filteredSkills.length}`}
-                </span>
-                <div className="toolbar">
-                  {!showAll && (
-                    <>
-                      <button
-                        type="button"
-                        className="btn"
-                        disabled={safePage === 0}
-                        onClick={() => setPage((p) => Math.max(0, p - 1))}
-                      >
-                        Prev
-                      </button>
-                      <button
-                        type="button"
-                        className="btn"
-                        disabled={safePage >= pageCount - 1}
-                        onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
-                      >
-                        Next
-                      </button>
-                    </>
-                  )}
-                  <button
-                    type="button"
-                    className="btn"
-                    aria-pressed={showAll}
-                    onClick={() => setShowAll((s) => !s)}
-                  >
-                    {showAll ? "Paginate (50)" : "Show All"}
-                  </button>
-                </div>
-              </div>
+                        </Suspense>
+                      </>
+                    )}
+                    {!contentLoading && !skillContent && (
+                      <div style={{ color: "var(--muted)" }}>
+                        Could not load SKILL.md content for this skill.
+                      </div>
+                    )}
+                  </div>
+                )}
+              </section>
             )}
-          </>
+          </div>
         )}
 
         {view === "discover" && (
@@ -3215,147 +3457,351 @@ export function App() {
         )}
 
         {view === "primitives" && (
-          <div style={{ display: "grid", gap: 14, minWidth: 0 }}>
-            <div className="underline-tabs" role="tablist" aria-label="Primitive categories">
-              {(
-                [
-                  { id: "mcp", label: `MCP Servers (${primitivesData?.mcpServers.length ?? 0})` },
-                  { id: "command", label: `Commands (${primitivesData?.commands.length ?? 0})` },
-                  { id: "prompt", label: `Prompts (${primitivesData?.prompts.length ?? 0})` },
-                  { id: "hook", label: `Hooks (${primitivesData?.hooks.length ?? 0})` },
-                  { id: "lsp", label: `LSPs (${primitivesData?.lsps.length ?? 0})` },
-                ] as const
-              ).map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  role="tab"
-                  className="underline-tab"
-                  aria-selected={primitiveTab === t.id}
-                  onClick={() => setPrimitiveTab(t.id)}
-                >
-                  <span>{t.label}</span>
-                </button>
-              ))}
-            </div>
-
-            <div className="panel" style={{ padding: "10px 14px" }}>
-              <div className="filter-bar">
-                <input
-                  type="search"
-                  className="search-input"
-                  aria-label="Filter primitives"
-                  placeholder={`Search ${primitiveTab}s, paths, or commands...`}
-                  value={primitiveSearch}
-                  onChange={(e) => setPrimitiveSearch(e.target.value)}
-                />
-                <div className="filter-group">
-                  <select
-                    aria-label="Filter by manager"
-                    value={primitiveManagerFilter}
-                    onChange={(e) => setPrimitiveManagerFilter(e.target.value)}
+          <div style={{ position: "relative", minWidth: 0 }}>
+            <div
+              className={selectedPrimitive ? "spa-view inactive" : "spa-view"}
+              aria-hidden={Boolean(selectedPrimitive)}
+              inert={Boolean(selectedPrimitive)}
+              style={{ display: "grid", gap: 14, minWidth: 0 }}
+            >
+              <div className="underline-tabs" role="tablist" aria-label="Primitive categories">
+                {(
+                  [
+                    { id: "mcp", label: `MCP Servers (${primitivesData?.mcpServers.length ?? 0})` },
+                    { id: "command", label: `Commands (${primitivesData?.commands.length ?? 0})` },
+                    { id: "prompt", label: `Prompts (${primitivesData?.prompts.length ?? 0})` },
+                    { id: "hook", label: `Hooks (${primitivesData?.hooks.length ?? 0})` },
+                    { id: "lsp", label: `LSPs (${primitivesData?.lsps.length ?? 0})` },
+                  ] as const
+                ).map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    role="tab"
+                    className="underline-tab"
+                    aria-selected={primitiveTab === t.id}
+                    onClick={() => setPrimitiveTab(t.id)}
                   >
-                    <option value="all">All Managers</option>
-                    <option value="apm">apm</option>
-                    <option value="claude-plugin">claude-plugin</option>
-                    <option value="gemini-extension">gemini-extension</option>
-                    <option value="manual">manual</option>
-                  </select>
-                  <div className="chip-group" role="group" aria-label="Primitive health filter">
-                    <button
-                      type="button"
-                      className={`btn ${primitiveHealthFilter === "all" ? "active-chip" : ""}`}
-                      onClick={() => setPrimitiveHealthFilter("all")}
+                    <span>{t.label}</span>
+                  </button>
+                ))}
+              </div>
+
+              <div className="panel" style={{ padding: "10px 14px" }}>
+                <div className="filter-bar">
+                  <input
+                    type="search"
+                    className="search-input"
+                    aria-label="Filter primitives"
+                    placeholder={`Search ${primitiveTab}s, paths, or commands...`}
+                    value={primitiveSearch}
+                    onChange={(e) => setPrimitiveSearch(e.target.value)}
+                  />
+                  <div className="filter-group">
+                    <select
+                      aria-label="Filter by manager"
+                      value={primitiveManagerFilter}
+                      onChange={(e) => setPrimitiveManagerFilter(e.target.value)}
                     >
-                      All
-                    </button>
-                    <button
-                      type="button"
-                      className={`btn ${primitiveHealthFilter === "drifted" ? "active-chip" : ""}`}
-                      onClick={() => setPrimitiveHealthFilter("drifted")}
-                    >
-                      Drifted
-                    </button>
+                      <option value="all">All Managers</option>
+                      <option value="apm">apm</option>
+                      <option value="claude-plugin">claude-plugin</option>
+                      <option value="gemini-extension">gemini-extension</option>
+                      <option value="manual">manual</option>
+                    </select>
+                    <div className="chip-group" role="group" aria-label="Primitive health filter">
+                      <button
+                        type="button"
+                        className={`btn ${primitiveHealthFilter === "all" ? "active-chip" : ""}`}
+                        onClick={() => setPrimitiveHealthFilter("all")}
+                      >
+                        All
+                      </button>
+                      <button
+                        type="button"
+                        className={`btn ${primitiveHealthFilter === "drifted" ? "active-chip" : ""}`}
+                        onClick={() => setPrimitiveHealthFilter("drifted")}
+                      >
+                        Drifted
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
 
-            {!primitivesData ? (
-              <div className="panel" aria-busy="true">
-                <div className="skeleton-row" />
-                <div className="skeleton-row" />
-              </div>
-            ) : primitiveTab === "mcp" ? (
-              (() => {
-                const q = primitiveSearch.trim().toLowerCase();
-                const filteredMcps = primitivesData.mcpServers.filter((m) => {
-                  if (harnessFilter !== "all" && !m.harnesses.includes(harnessFilter)) return false;
-                  if (
-                    primitiveManagerFilter !== "all" &&
-                    m.owningManager !== primitiveManagerFilter
-                  )
-                    return false;
-                  if (primitiveHealthFilter === "drifted" && !m.hasDrift) return false;
-                  if (!q) return true;
-                  return (
-                    m.name.toLowerCase().includes(q) ||
-                    m.commandOrUrl.toLowerCase().includes(q) ||
-                    m.configPaths.some((p) => p.toLowerCase().includes(q))
-                  );
-                });
-                const matrixHarnesses = Array.from(
-                  new Set(filteredMcps.flatMap((m) => m.harnesses)),
-                ).sort();
-                return filteredMcps.length === 0 ? (
-                  <div className="panel empty-state">No matching MCP servers configured.</div>
-                ) : (
-                  <div className="table-wrapper" tabIndex={0}>
-                    <table>
-                      <thead>
-                        <tr>
-                          <th scope="col">MCP Server</th>
-                          <th scope="col">Manager</th>
-                          <th scope="col">Scope</th>
-                          <th scope="col">Transport</th>
-                          <th scope="col">Command / Endpoint</th>
-                          <th scope="col">Tokens</th>
-                          {matrixHarnesses.map((hId) => (
-                            <th key={hId} scope="col" title={hId}>
-                              <span
-                                style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
-                              >
-                                <HarnessIcon harnessId={hId} size={12} />
-                                <span>{hId}</span>
-                              </span>
+              {!primitivesData ? (
+                <div className="panel" aria-busy="true">
+                  <div className="skeleton-row" />
+                  <div className="skeleton-row" />
+                </div>
+              ) : primitiveTab === "mcp" ? (
+                (() => {
+                  const q = primitiveSearch.trim().toLowerCase();
+                  const filteredMcps = primitivesData.mcpServers.filter((m) => {
+                    if (harnessFilter !== "all" && !m.harnesses.includes(harnessFilter))
+                      return false;
+                    if (
+                      primitiveManagerFilter !== "all" &&
+                      m.owningManager !== primitiveManagerFilter
+                    )
+                      return false;
+                    if (primitiveHealthFilter === "drifted" && !m.hasDrift) return false;
+                    if (!q) return true;
+                    return (
+                      m.name.toLowerCase().includes(q) ||
+                      m.commandOrUrl.toLowerCase().includes(q) ||
+                      m.configPaths.some((p) => p.toLowerCase().includes(q))
+                    );
+                  });
+                  const matrixHarnesses = Array.from(
+                    new Set(filteredMcps.flatMap((m) => m.harnesses)),
+                  ).sort();
+                  return filteredMcps.length === 0 ? (
+                    <div className="panel empty-state">No matching MCP servers configured.</div>
+                  ) : (
+                    <div className="table-wrapper" tabIndex={0}>
+                      <table>
+                        <thead>
+                          <tr>
+                            <th scope="col">MCP Server</th>
+                            <th scope="col">Manager</th>
+                            <th scope="col">Scope</th>
+                            <th scope="col">Transport</th>
+                            <th scope="col">Command / Endpoint</th>
+                            <th scope="col">Tokens</th>
+                            {matrixHarnesses.map((hId) => (
+                              <th key={hId} scope="col" title={hId}>
+                                <span
+                                  style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+                                >
+                                  <HarnessIcon harnessId={hId} size={12} />
+                                  <span>{hId}</span>
+                                </span>
+                              </th>
+                            ))}
+                            <th
+                              scope="col"
+                              className="sticky-actions-col"
+                              style={{ textAlign: "right" }}
+                            >
+                              Actions
                             </th>
-                          ))}
-                          <th
-                            scope="col"
-                            className="sticky-actions-col"
-                            style={{ textAlign: "right" }}
-                          >
-                            Actions
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {filteredMcps.map((mcp) => {
-                          const firstPath = mcp.configPaths[0];
-                          const firstHarness = mcp.harnesses[0];
-                          return (
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {filteredMcps.map((mcp) => {
+                            const firstPath = mcp.configPaths[0];
+                            const firstHarness = mcp.harnesses[0];
+                            return (
+                              <tr
+                                key={mcp.name}
+                                data-selected={selectedPrimitive?.id === mcp.id}
+                                onClick={() =>
+                                  navigateWithTransition(
+                                    () => setSelectedPrimitive({ ...mcp, kind: "mcp" }),
+                                    "detail-heading",
+                                  )
+                                }
+                              >
+                                <td>
+                                  <div className="skill-name-cell">
+                                    <strong>{mcp.name}</strong>
+                                    {mcp.hasDrift && (
+                                      <span
+                                        className="badge warn"
+                                        title={mcp.driftSummary ?? "Conflicting MCP config"}
+                                      >
+                                        <AlertTriangle size={11} aria-hidden="true" />
+                                        <span>drift</span>
+                                      </span>
+                                    )}
+                                  </div>
+                                </td>
+                                <td>
+                                  <span className="badge">{mcp.owningManager}</span>
+                                </td>
+                                <td>
+                                  <span className="badge">{mcp.scope}</span>
+                                </td>
+                                <td>
+                                  <span className="badge">{mcp.transport}</span>
+                                </td>
+                                <td>
+                                  <CopyableText text={mcp.commandOrUrl} maxWidth={260} />
+                                </td>
+                                <td className="mono num">{mcp.estimatedTokens}</td>
+                                {matrixHarnesses.map((hId) => {
+                                  const enabled = mcp.harnesses.includes(hId);
+                                  return (
+                                    <td key={hId}>
+                                      {enabled ? (
+                                        <span className="badge ok" title={`Configured in ${hId}`}>
+                                          <Check size={11} aria-hidden="true" />
+                                        </span>
+                                      ) : (
+                                        <span style={{ color: "var(--muted)" }}>—</span>
+                                      )}
+                                    </td>
+                                  );
+                                })}
+                                <td
+                                  className="sticky-actions-col"
+                                  style={{ textAlign: "right" }}
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <ActionMenu
+                                    label={`Actions for MCP ${mcp.name}`}
+                                    items={[
+                                      {
+                                        id: "inspect",
+                                        label: "Inspect details",
+                                        icon: <FileText size={13} />,
+                                        onSelect: () =>
+                                          setSelectedPrimitive({ ...mcp, kind: "mcp" }),
+                                      },
+                                      {
+                                        id: "upgrade",
+                                        label: "Upgrade",
+                                        icon: <ArrowUpCircle size={13} />,
+                                        onSelect: () =>
+                                          void openPrimitiveActionPreview({
+                                            action: "upgrade",
+                                            kind: "mcp",
+                                            name: mcp.name,
+                                            owningManager: mcp.owningManager,
+                                            scope: mcp.scope,
+                                            ...(firstHarness ? { harnessId: firstHarness } : {}),
+                                            ...(firstPath ? { path: firstPath } : {}),
+                                          }),
+                                      },
+                                      ...(mcp.owningManager !== "apm"
+                                        ? [
+                                            {
+                                              id: "migrate",
+                                              label: "Migrate to APM",
+                                              icon: <Boxes size={13} />,
+                                              onSelect: () =>
+                                                void openPrimitiveActionPreview({
+                                                  action: "migrate-to-apm",
+                                                  kind: "mcp",
+                                                  name: mcp.name,
+                                                  owningManager: mcp.owningManager,
+                                                  scope: mcp.scope,
+                                                  ...(firstHarness
+                                                    ? { harnessId: firstHarness }
+                                                    : {}),
+                                                  ...(firstPath ? { path: firstPath } : {}),
+                                                }),
+                                            },
+                                          ]
+                                        : []),
+                                      ...(firstPath
+                                        ? [
+                                            {
+                                              id: "reveal",
+                                              label: "Open config in Finder",
+                                              icon: <FolderOpen size={13} />,
+                                              onSelect: () => void client.revealPath(firstPath),
+                                            },
+                                          ]
+                                        : []),
+                                      {
+                                        id: "remove",
+                                        label: "Remove",
+                                        icon: <Trash2 size={13} />,
+                                        tone: "danger" as const,
+                                        separatorBefore: true,
+                                        onSelect: () =>
+                                          void openPrimitiveActionPreview({
+                                            action: "remove",
+                                            kind: "mcp",
+                                            name: mcp.name,
+                                            owningManager: mcp.owningManager,
+                                            scope: mcp.scope,
+                                            ...(firstHarness ? { harnessId: firstHarness } : {}),
+                                            ...(firstPath ? { path: firstPath } : {}),
+                                          }),
+                                      },
+                                    ]}
+                                  />
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })()
+              ) : (
+                (() => {
+                  const rawList =
+                    primitiveTab === "command"
+                      ? primitivesData.commands
+                      : primitiveTab === "prompt"
+                        ? primitivesData.prompts
+                        : primitiveTab === "hook"
+                          ? primitivesData.hooks
+                          : primitivesData.lsps;
+                  const q = primitiveSearch.trim().toLowerCase();
+                  const list = rawList.filter((item) => {
+                    if (harnessFilter !== "all" && item.harnessId !== harnessFilter) return false;
+                    if (
+                      primitiveManagerFilter !== "all" &&
+                      item.owningManager !== primitiveManagerFilter
+                    ) {
+                      return false;
+                    }
+                    if (primitiveHealthFilter === "drifted" && !item.hasDrift) return false;
+                    if (!q) return true;
+                    return (
+                      item.name.toLowerCase().includes(q) ||
+                      item.path.toLowerCase().includes(q) ||
+                      (item.detail?.toLowerCase().includes(q) ?? false)
+                    );
+                  });
+                  return list.length === 0 ? (
+                    <div className="panel empty-state">No matching {primitiveTab}s discovered.</div>
+                  ) : (
+                    <div className="table-wrapper" tabIndex={0}>
+                      <table>
+                        <thead>
+                          <tr>
+                            <th scope="col">Name</th>
+                            <th scope="col">Manager</th>
+                            <th scope="col">Scope</th>
+                            <th scope="col">Harness</th>
+                            <th scope="col">Detail</th>
+                            <th scope="col">Tokens</th>
+                            <th scope="col">Path</th>
+                            <th
+                              scope="col"
+                              className="sticky-actions-col"
+                              style={{ textAlign: "right" }}
+                            >
+                              Actions
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {list.map((item) => (
                             <tr
-                              key={mcp.name}
-                              data-selected={selectedPrimitive?.id === mcp.id}
-                              onClick={() => setSelectedPrimitive({ ...mcp, kind: "mcp" })}
+                              key={item.id}
+                              data-selected={selectedPrimitive?.id === item.id}
+                              onClick={() =>
+                                navigateWithTransition(
+                                  () => setSelectedPrimitive(item),
+                                  "detail-heading",
+                                )
+                              }
                             >
                               <td>
                                 <div className="skill-name-cell">
-                                  <strong>{mcp.name}</strong>
-                                  {mcp.hasDrift && (
+                                  <strong>{item.name}</strong>
+                                  {item.hasDrift && (
                                     <span
                                       className="badge warn"
-                                      title={mcp.driftSummary ?? "Conflicting MCP config"}
+                                      title={item.driftSummary ?? "Duplicate or drifted primitive"}
                                     >
                                       <AlertTriangle size={11} aria-hidden="true" />
                                       <span>drift</span>
@@ -3364,45 +3810,37 @@ export function App() {
                                 </div>
                               </td>
                               <td>
-                                <span className="badge">{mcp.owningManager}</span>
+                                <span className="badge">{item.owningManager}</span>
                               </td>
                               <td>
-                                <span className="badge">{mcp.scope}</span>
+                                <span className="badge">{item.scope}</span>
                               </td>
                               <td>
-                                <span className="badge">{mcp.transport}</span>
+                                <span
+                                  style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+                                >
+                                  <HarnessIcon harnessId={item.harnessId} size={12} />
+                                  <span>{item.harnessId}</span>
+                                </span>
                               </td>
+                              <td style={{ color: "var(--muted)" }}>{item.detail ?? "—"}</td>
+                              <td className="mono num">{item.estimatedTokens}</td>
                               <td>
-                                <CopyableText text={mcp.commandOrUrl} maxWidth={260} />
+                                <CopyableText text={item.path} maxWidth={320} />
                               </td>
-                              <td className="mono num">{mcp.estimatedTokens}</td>
-                              {matrixHarnesses.map((hId) => {
-                                const enabled = mcp.harnesses.includes(hId);
-                                return (
-                                  <td key={hId}>
-                                    {enabled ? (
-                                      <span className="badge ok" title={`Configured in ${hId}`}>
-                                        <Check size={11} aria-hidden="true" />
-                                      </span>
-                                    ) : (
-                                      <span style={{ color: "var(--muted)" }}>—</span>
-                                    )}
-                                  </td>
-                                );
-                              })}
                               <td
                                 className="sticky-actions-col"
                                 style={{ textAlign: "right" }}
                                 onClick={(e) => e.stopPropagation()}
                               >
                                 <ActionMenu
-                                  label={`Actions for MCP ${mcp.name}`}
+                                  label={`Actions for ${item.name}`}
                                   items={[
                                     {
                                       id: "inspect",
                                       label: "Inspect details",
                                       icon: <FileText size={13} />,
-                                      onSelect: () => setSelectedPrimitive({ ...mcp, kind: "mcp" }),
+                                      onSelect: () => setSelectedPrimitive(item),
                                     },
                                     {
                                       id: "upgrade",
@@ -3411,15 +3849,15 @@ export function App() {
                                       onSelect: () =>
                                         void openPrimitiveActionPreview({
                                           action: "upgrade",
-                                          kind: "mcp",
-                                          name: mcp.name,
-                                          owningManager: mcp.owningManager,
-                                          scope: mcp.scope,
-                                          ...(firstHarness ? { harnessId: firstHarness } : {}),
-                                          ...(firstPath ? { path: firstPath } : {}),
+                                          kind: item.kind,
+                                          name: item.name,
+                                          harnessId: item.harnessId,
+                                          owningManager: item.owningManager,
+                                          scope: item.scope,
+                                          path: item.path,
                                         }),
                                     },
-                                    ...(mcp.owningManager !== "apm"
+                                    ...(item.owningManager !== "apm"
                                       ? [
                                           {
                                             id: "migrate",
@@ -3428,28 +3866,22 @@ export function App() {
                                             onSelect: () =>
                                               void openPrimitiveActionPreview({
                                                 action: "migrate-to-apm",
-                                                kind: "mcp",
-                                                name: mcp.name,
-                                                owningManager: mcp.owningManager,
-                                                scope: mcp.scope,
-                                                ...(firstHarness
-                                                  ? { harnessId: firstHarness }
-                                                  : {}),
-                                                ...(firstPath ? { path: firstPath } : {}),
+                                                kind: item.kind,
+                                                name: item.name,
+                                                harnessId: item.harnessId,
+                                                owningManager: item.owningManager,
+                                                scope: item.scope,
+                                                path: item.path,
                                               }),
                                           },
                                         ]
                                       : []),
-                                    ...(firstPath
-                                      ? [
-                                          {
-                                            id: "reveal",
-                                            label: "Open config in Finder",
-                                            icon: <FolderOpen size={13} />,
-                                            onSelect: () => void client.revealPath(firstPath),
-                                          },
-                                        ]
-                                      : []),
+                                    {
+                                      id: "reveal",
+                                      label: "Open in Finder",
+                                      icon: <FolderOpen size={13} />,
+                                      onSelect: () => void client.revealPath(item.path),
+                                    },
                                     {
                                       id: "remove",
                                       label: "Remove",
@@ -3459,220 +3891,68 @@ export function App() {
                                       onSelect: () =>
                                         void openPrimitiveActionPreview({
                                           action: "remove",
-                                          kind: "mcp",
-                                          name: mcp.name,
-                                          owningManager: mcp.owningManager,
-                                          scope: mcp.scope,
-                                          ...(firstHarness ? { harnessId: firstHarness } : {}),
-                                          ...(firstPath ? { path: firstPath } : {}),
+                                          kind: item.kind,
+                                          name: item.name,
+                                          harnessId: item.harnessId,
+                                          owningManager: item.owningManager,
+                                          scope: item.scope,
+                                          path: item.path,
                                         }),
                                     },
                                   ]}
                                 />
                               </td>
                             </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                );
-              })()
-            ) : (
-              (() => {
-                const rawList =
-                  primitiveTab === "command"
-                    ? primitivesData.commands
-                    : primitiveTab === "prompt"
-                      ? primitivesData.prompts
-                      : primitiveTab === "hook"
-                        ? primitivesData.hooks
-                        : primitivesData.lsps;
-                const q = primitiveSearch.trim().toLowerCase();
-                const list = rawList.filter((item) => {
-                  if (harnessFilter !== "all" && item.harnessId !== harnessFilter) return false;
-                  if (
-                    primitiveManagerFilter !== "all" &&
-                    item.owningManager !== primitiveManagerFilter
-                  ) {
-                    return false;
-                  }
-                  if (primitiveHealthFilter === "drifted" && !item.hasDrift) return false;
-                  if (!q) return true;
-                  return (
-                    item.name.toLowerCase().includes(q) ||
-                    item.path.toLowerCase().includes(q) ||
-                    (item.detail?.toLowerCase().includes(q) ?? false)
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   );
-                });
-                return list.length === 0 ? (
-                  <div className="panel empty-state">No matching {primitiveTab}s discovered.</div>
-                ) : (
-                  <div className="table-wrapper" tabIndex={0}>
-                    <table>
-                      <thead>
-                        <tr>
-                          <th scope="col">Name</th>
-                          <th scope="col">Manager</th>
-                          <th scope="col">Scope</th>
-                          <th scope="col">Harness</th>
-                          <th scope="col">Detail</th>
-                          <th scope="col">Tokens</th>
-                          <th scope="col">Path</th>
-                          <th
-                            scope="col"
-                            className="sticky-actions-col"
-                            style={{ textAlign: "right" }}
-                          >
-                            Actions
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {list.map((item) => (
-                          <tr
-                            key={item.id}
-                            data-selected={selectedPrimitive?.id === item.id}
-                            onClick={() => setSelectedPrimitive(item)}
-                          >
-                            <td>
-                              <div className="skill-name-cell">
-                                <strong>{item.name}</strong>
-                                {item.hasDrift && (
-                                  <span
-                                    className="badge warn"
-                                    title={item.driftSummary ?? "Duplicate or drifted primitive"}
-                                  >
-                                    <AlertTriangle size={11} aria-hidden="true" />
-                                    <span>drift</span>
-                                  </span>
-                                )}
-                              </div>
-                            </td>
-                            <td>
-                              <span className="badge">{item.owningManager}</span>
-                            </td>
-                            <td>
-                              <span className="badge">{item.scope}</span>
-                            </td>
-                            <td>
-                              <span
-                                style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
-                              >
-                                <HarnessIcon harnessId={item.harnessId} size={12} />
-                                <span>{item.harnessId}</span>
-                              </span>
-                            </td>
-                            <td style={{ color: "var(--muted)" }}>{item.detail ?? "—"}</td>
-                            <td className="mono num">{item.estimatedTokens}</td>
-                            <td>
-                              <CopyableText text={item.path} maxWidth={320} />
-                            </td>
-                            <td
-                              className="sticky-actions-col"
-                              style={{ textAlign: "right" }}
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              <ActionMenu
-                                label={`Actions for ${item.name}`}
-                                items={[
-                                  {
-                                    id: "inspect",
-                                    label: "Inspect details",
-                                    icon: <FileText size={13} />,
-                                    onSelect: () => setSelectedPrimitive(item),
-                                  },
-                                  {
-                                    id: "upgrade",
-                                    label: "Upgrade",
-                                    icon: <ArrowUpCircle size={13} />,
-                                    onSelect: () =>
-                                      void openPrimitiveActionPreview({
-                                        action: "upgrade",
-                                        kind: item.kind,
-                                        name: item.name,
-                                        harnessId: item.harnessId,
-                                        owningManager: item.owningManager,
-                                        scope: item.scope,
-                                        path: item.path,
-                                      }),
-                                  },
-                                  ...(item.owningManager !== "apm"
-                                    ? [
-                                        {
-                                          id: "migrate",
-                                          label: "Migrate to APM",
-                                          icon: <Boxes size={13} />,
-                                          onSelect: () =>
-                                            void openPrimitiveActionPreview({
-                                              action: "migrate-to-apm",
-                                              kind: item.kind,
-                                              name: item.name,
-                                              harnessId: item.harnessId,
-                                              owningManager: item.owningManager,
-                                              scope: item.scope,
-                                              path: item.path,
-                                            }),
-                                        },
-                                      ]
-                                    : []),
-                                  {
-                                    id: "reveal",
-                                    label: "Open in Finder",
-                                    icon: <FolderOpen size={13} />,
-                                    onSelect: () => void client.revealPath(item.path),
-                                  },
-                                  {
-                                    id: "remove",
-                                    label: "Remove",
-                                    icon: <Trash2 size={13} />,
-                                    tone: "danger" as const,
-                                    separatorBefore: true,
-                                    onSelect: () =>
-                                      void openPrimitiveActionPreview({
-                                        action: "remove",
-                                        kind: item.kind,
-                                        name: item.name,
-                                        harnessId: item.harnessId,
-                                        owningManager: item.owningManager,
-                                        scope: item.scope,
-                                        path: item.path,
-                                      }),
-                                  },
-                                ]}
-                              />
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                );
-              })()
-            )}
+                })()
+              )}
+            </div>
 
-            <ModalDialog
-              open={selectedPrimitive !== null}
-              onOpenChange={(open) => {
-                if (!open) setSelectedPrimitive(null);
-              }}
-              title={selectedPrimitive ? selectedPrimitive.name : ""}
-              description={
-                selectedPrimitive
-                  ? `${selectedPrimitive.kind.toUpperCase()} · ${selectedPrimitive.owningManager} · ${selectedPrimitive.scope} · ${selectedPrimitive.estimatedTokens.toLocaleString()} est. tokens`
-                  : ""
-              }
-              maxWidthClassName="max-w-[680px]"
-              footer={
-                selectedPrimitive ? (
-                  <>
+            {selectedPrimitive && (
+              <section
+                className="panel"
+                aria-labelledby="detail-heading"
+                style={{ display: "grid", gap: 14 }}
+              >
+                <div className="topbar" style={{ paddingBottom: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() =>
+                        navigateWithTransition(() => setSelectedPrimitive(null), "list-heading")
+                      }
+                    >
+                      <ArrowLeft size={13} aria-hidden="true" />
+                      <span>{primitiveTab.toUpperCase()}</span>
+                    </button>
+                    <div style={{ minWidth: 0 }}>
+                      <h1
+                        id="detail-heading"
+                        tabIndex={-1}
+                        className="detail-heading"
+                        style={{ margin: 0, fontSize: 18 }}
+                      >
+                        {selectedPrimitive.name}
+                      </h1>
+                      <div className="mono" style={{ color: "var(--muted)", fontSize: 12 }}>
+                        {selectedPrimitive.kind.toUpperCase()} · {selectedPrimitive.owningManager} ·{" "}
+                        {selectedPrimitive.scope} ·{" "}
+                        {selectedPrimitive.estimatedTokens.toLocaleString()} est. tokens
+                      </div>
+                    </div>
+                  </div>
+                  <div className="toolbar">
                     <button
                       type="button"
                       className="btn"
                       onClick={() => {
                         const p = selectedPrimitive;
                         const firstExp = p.exposures[0];
-                        setSelectedPrimitive(null);
                         void openPrimitiveActionPreview({
                           action: "upgrade",
                           kind: p.kind,
@@ -3694,7 +3974,6 @@ export function App() {
                         onClick={() => {
                           const p = selectedPrimitive;
                           const firstExp = p.exposures[0];
-                          setSelectedPrimitive(null);
                           void openPrimitiveActionPreview({
                             action: "migrate-to-apm",
                             kind: p.kind,
@@ -3716,7 +3995,6 @@ export function App() {
                       onClick={() => {
                         const p = selectedPrimitive;
                         const firstExp = p.exposures[0];
-                        setSelectedPrimitive(null);
                         void openPrimitiveActionPreview({
                           action: "remove",
                           kind: p.kind,
@@ -3731,11 +4009,8 @@ export function App() {
                       <Trash2 size={13} aria-hidden="true" />
                       <span>Remove</span>
                     </button>
-                  </>
-                ) : undefined
-              }
-            >
-              {selectedPrimitive && (
+                  </div>
+                </div>
                 <div style={{ display: "grid", gap: 14 }}>
                   {selectedPrimitive.hasDrift && (
                     <div
@@ -3883,8 +4158,8 @@ export function App() {
                     })}
                   </div>
                 </div>
-              )}
-            </ModalDialog>
+              </section>
+            )}
           </div>
         )}
 
@@ -4030,7 +4305,9 @@ export function App() {
                             <span className="mono">{m.tokens.toLocaleString()} tokens</span>
                           )}
                         </div>
-                        <MarkdownViewer content={m.content} />
+                        <Suspense fallback={<div className="skeleton-row" />}>
+                          <MarkdownViewer content={m.content} />
+                        </Suspense>
                       </article>
                     ))
                   )}
@@ -5504,6 +5781,8 @@ export function App() {
                   disabled={previewModal.preview.commands.length === 0}
                   onClick={() => {
                     const exec = previewModal.execute;
+                    const activePreview = previewModal.preview;
+                    const activeRemoveContext = previewModal.removeContext;
                     setPreviewModal(null);
                     void exec().then((res) => {
                       const msg = res.success
@@ -5511,7 +5790,9 @@ export function App() {
                         : `Failed: ${res.errors.join("; ")}`;
                       setBanner(msg);
                       setLiveAnnouncement(msg);
-                      void load(true);
+                      if (res.success) {
+                        applyMutationToLocalState(activePreview, activeRemoveContext);
+                      }
                     });
                   }}
                 >

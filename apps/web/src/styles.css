@@ -654,6 +654,31 @@ td.wrap-cell {
   max-width: 420px;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+}
+
+.detail-heading {
+  width: fit-content;
+}
+
+.spa-view.inactive {
+  content-visibility: hidden;
+  position: absolute;
+  width: 100%;
+  pointer-events: none;
+}
+
+@supports not (content-visibility: hidden) {
+  .spa-view.inactive {
+    display: none;
+  }
+}
+
 .table-wrapper td .btn {
   min-block-size: 28px;
   padding: 4px 10px;
