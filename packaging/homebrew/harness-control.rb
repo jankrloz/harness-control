@@ -1,6 +1,6 @@
-class HarnessManager < Formula
+class HarnessControl < Formula
   desc "Unified visibility dashboard and orchestration wrapper across AI coding harnesses"
-  homepage "https://github.com/jcn/harness-control"
+  homepage "https://github.com/jankrloz/harness-control"
   version "0.1.0"
   license "MIT"
 
