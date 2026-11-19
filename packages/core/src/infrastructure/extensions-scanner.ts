@@ -4,7 +4,9 @@ import path from "node:path";
 import type {
   HarnessId,
   McpServerEntry,
+  PackageManager,
   PrimitiveEntry,
+  PrimitiveExposure,
   PrimitivesSnapshot,
   SessionDetail,
   SessionMessage,
@@ -69,6 +71,33 @@ async function collectFilesRecursive(
   return out;
 }
 
+function inferPrimitiveManager(
+  filePath: string,
+  apmManagedNames?: Set<string>,
+  name?: string,
+): PackageManager {
+  if (name && apmManagedNames?.has(name.toLowerCase())) return "apm";
+  if (filePath.includes("/.apm/") || filePath.includes("/apm_modules/")) return "apm";
+  if (filePath.includes("/.claude/plugins") || filePath.includes("/plugins/marketplaces")) {
+    return "claude-plugin";
+  }
+  if (filePath.includes("/.gemini/extensions")) return "gemini-extension";
+  return "manual";
+}
+
+function estimateTokensFromText(text: string): number {
+  return Math.max(1, Math.ceil(text.length / 4));
+}
+
+async function estimateFileTokens(filePath: string, fallbackText: string): Promise<number> {
+  try {
+    const st = await fs.stat(filePath);
+    return Math.max(1, Math.ceil(st.size / 4));
+  } catch {
+    return estimateTokensFromText(fallbackText);
+  }
+}
+
 function addMcpMap(
   map: Map<
     string,
@@ -78,6 +107,9 @@ function addMcpMap(
       transport: "stdio" | "http" | "sse";
       harnesses: Set<HarnessId>;
       configPaths: Set<string>;
+      exposures: PrimitiveExposure[];
+      variants: Set<string>;
+      rawChars: number;
     }
   >,
   serversObj: unknown,
@@ -104,11 +136,21 @@ function addMcpMap(
         ? "sse"
         : "http"
       : "stdio";
+    const exposure: PrimitiveExposure = {
+      harnessId,
+      scope: "global",
+      path: configPath,
+      detail: commandOrUrl,
+    };
+    const cfgSize = JSON.stringify(rawCfg).length;
 
     const existing = map.get(name);
     if (existing) {
       existing.harnesses.add(harnessId);
       existing.configPaths.add(configPath);
+      existing.exposures.push(exposure);
+      existing.variants.add(commandOrUrl);
+      existing.rawChars = Math.max(existing.rawChars, cfgSize);
     } else {
       map.set(name, {
         name,
@@ -116,6 +158,9 @@ function addMcpMap(
         transport,
         harnesses: new Set([harnessId]),
         configPaths: new Set([configPath]),
+        exposures: [exposure],
+        variants: new Set([commandOrUrl]),
+        rawChars: cfgSize,
       });
     }
   }
@@ -123,6 +168,20 @@ function addMcpMap(
 
 export async function scanPrimitives(homeOverride?: string): Promise<PrimitivesSnapshot> {
   const home = homeOverride ?? os.homedir();
+  const apmManagedNames = new Set<string>();
+  try {
+    const rawApm = await fs.readFile(path.join(home, ".apm", "apm.yml"), "utf8");
+    for (const line of rawApm.split(/\r?\n/)) {
+      const m = line.match(/^\s*-\s+([^\s#]+)/);
+      if (m?.[1]) {
+        const last = m[1].split("/").pop()?.replace(/#.*$/, "");
+        if (last) apmManagedNames.add(last.toLowerCase());
+      }
+    }
+  } catch {
+    // No global apm.yml
+  }
+
   const mcpMap = new Map<
     string,
     {
@@ -131,6 +190,9 @@ export async function scanPrimitives(homeOverride?: string): Promise<PrimitivesS
       transport: "stdio" | "http" | "sse";
       harnesses: Set<HarnessId>;
       configPaths: Set<string>;
+      exposures: PrimitiveExposure[];
+      variants: Set<string>;
+      rawChars: number;
     }
   >();
 
@@ -181,13 +243,26 @@ export async function scanPrimitives(homeOverride?: string): Promise<PrimitivesS
   }
 
   const mcpServers: McpServerEntry[] = Array.from(mcpMap.values())
-    .map((m) => ({
-      name: m.name,
-      commandOrUrl: m.commandOrUrl,
-      transport: m.transport,
-      harnesses: Array.from(m.harnesses).sort(),
-      configPaths: Array.from(m.configPaths),
-    }))
+    .map((m) => {
+      const hasDrift = m.variants.size > 1;
+      const firstPath = Array.from(m.configPaths)[0] ?? "";
+      return {
+        id: `mcp:${m.name}`,
+        name: m.name,
+        commandOrUrl: m.commandOrUrl,
+        transport: m.transport,
+        harnesses: Array.from(m.harnesses).sort(),
+        configPaths: Array.from(m.configPaths),
+        scope: "global" as const,
+        owningManager: inferPrimitiveManager(firstPath, apmManagedNames, m.name),
+        exposures: m.exposures,
+        hasDrift,
+        ...(hasDrift
+          ? { driftSummary: `${m.variants.size} differing configs across harnesses` }
+          : {}),
+        estimatedTokens: Math.max(12, Math.ceil(m.rawChars / 4)),
+      };
+    })
     .sort((a, b) => a.name.localeCompare(b.name));
 
   // Commands & Prompts
@@ -210,12 +285,19 @@ export async function scanPrimitives(homeOverride?: string): Promise<PrimitivesS
   for (const cd of cmdDirs) {
     const files = await listFilesSafe(cd.dir);
     for (const file of files) {
+      const name = path.basename(file).replace(/\.(md|toml)$/i, "");
+      const estimatedTokens = await estimateFileTokens(file, name);
       const entry: PrimitiveEntry = {
         id: `${cd.harness}:${cd.kind}:${path.basename(file)}`,
         kind: cd.kind,
-        name: path.basename(file).replace(/\.(md|toml)$/i, ""),
+        name,
         harnessId: cd.harness,
         path: file,
+        scope: "global",
+        owningManager: inferPrimitiveManager(file, apmManagedNames, name),
+        exposures: [{ harnessId: cd.harness, scope: "global", path: file }],
+        hasDrift: false,
+        estimatedTokens,
       };
       if (cd.kind === "command") commands.push(entry);
       else prompts.push(entry);
@@ -229,13 +311,19 @@ export async function scanPrimitives(homeOverride?: string): Promise<PrimitivesS
     const rawHooks = data?.["hooks"];
     if (rawHooks && typeof rawHooks === "object" && !Array.isArray(rawHooks)) {
       for (const [hookEvent, list] of Object.entries(rawHooks as Record<string, unknown>)) {
+        const detail = Array.isArray(list) ? `${list.length} matcher(s)` : "configured";
         hooks.push({
           id: `claude:hook:${hookEvent}:${settingsPath}`,
           kind: "hook",
           name: hookEvent,
           harnessId: "claude",
           path: settingsPath,
-          detail: Array.isArray(list) ? `${list.length} matcher(s)` : "configured",
+          detail,
+          scope: "global",
+          owningManager: inferPrimitiveManager(settingsPath, apmManagedNames, hookEvent),
+          exposures: [{ harnessId: "claude", scope: "global", path: settingsPath, detail }],
+          hasDrift: false,
+          estimatedTokens: estimateTokensFromText(JSON.stringify(list ?? detail)),
         });
       }
     }
@@ -247,24 +335,74 @@ export async function scanPrimitives(homeOverride?: string): Promise<PrimitivesS
   const rawLsp = openCodeData?.["lsp"];
   if (rawLsp && typeof rawLsp === "object" && !Array.isArray(rawLsp)) {
     for (const [lang, cfg] of Object.entries(rawLsp as Record<string, unknown>)) {
+      const detail = cfg && typeof cfg === "object" ? "configured" : String(cfg);
       lsps.push({
         id: `opencode:lsp:${lang}`,
         kind: "lsp",
         name: lang,
         harnessId: "opencode",
         path: openCodePath,
-        detail: cfg && typeof cfg === "object" ? "configured" : String(cfg),
+        detail,
+        scope: "global",
+        owningManager: inferPrimitiveManager(openCodePath, apmManagedNames, lang),
+        exposures: [{ harnessId: "opencode", scope: "global", path: openCodePath, detail }],
+        hasDrift: false,
+        estimatedTokens: estimateTokensFromText(JSON.stringify(cfg ?? detail)),
       });
     }
   }
 
+  // Cross-harness duplicate / drift annotation for commands, prompts, hooks, lsps
+  const annotateDuplicates = (entries: PrimitiveEntry[]): PrimitiveEntry[] => {
+    const byName = new Map<string, PrimitiveEntry[]>();
+    for (const e of entries) {
+      const key = e.name.toLowerCase();
+      const arr = byName.get(key) ?? [];
+      arr.push(e);
+      byName.set(key, arr);
+    }
+    return entries.map((e) => {
+      const siblings = byName.get(e.name.toLowerCase()) ?? [e];
+      if (siblings.length <= 1) return e;
+      const details = new Set(siblings.map((s) => s.detail ?? `${s.estimatedTokens}`));
+      const hasDiff = details.size > 1;
+      return {
+        ...e,
+        hasDrift: hasDiff,
+        driftSummary: hasDiff
+          ? `${siblings.length} copies with differing definitions`
+          : `${siblings.length} duplicate copies across paths`,
+        exposures: siblings.flatMap((s) => s.exposures),
+      };
+    });
+  };
+
+  const finalCommands = annotateDuplicates(commands).sort((a, b) => a.name.localeCompare(b.name));
+  const finalPrompts = annotateDuplicates(prompts).sort((a, b) => a.name.localeCompare(b.name));
+  const finalHooks = annotateDuplicates(hooks).sort((a, b) => a.name.localeCompare(b.name));
+  const finalLsps = annotateDuplicates(lsps).sort((a, b) => a.name.localeCompare(b.name));
+
+  const allEntries = [
+    ...mcpServers,
+    ...finalCommands,
+    ...finalPrompts,
+    ...finalHooks,
+    ...finalLsps,
+  ];
+  const summary = {
+    totalPrimitives: allEntries.length,
+    driftedCount: allEntries.filter((e) => e.hasDrift).length,
+    totalEstimatedTokens: allEntries.reduce((sum, e) => sum + e.estimatedTokens, 0),
+  };
+
   return {
     scannedAt: new Date().toISOString(),
     mcpServers,
-    commands: commands.sort((a, b) => a.name.localeCompare(b.name)),
-    prompts: prompts.sort((a, b) => a.name.localeCompare(b.name)),
-    hooks: hooks.sort((a, b) => a.name.localeCompare(b.name)),
-    lsps: lsps.sort((a, b) => a.name.localeCompare(b.name)),
+    commands: finalCommands,
+    prompts: finalPrompts,
+    hooks: finalHooks,
+    lsps: finalLsps,
+    summary,
   };
 }
 

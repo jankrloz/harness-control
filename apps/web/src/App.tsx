@@ -141,6 +141,26 @@ const client = {
   executeCleanup: (items: readonly CleanupQueueItem[]) =>
     apiPost<CleanupExecuteResponse>("/api/cleanup/execute", { items }),
   getPrimitives: () => apiGet<PrimitivesSnapshot>("/api/primitives"),
+  previewPrimitiveAction: (req: {
+    action: "upgrade" | "migrate-to-apm" | "remove";
+    kind: "mcp" | "hook" | "command" | "lsp" | "prompt";
+    name: string;
+    harnessId?: string;
+    owningManager?: string;
+    scope?: "global" | "project" | "mixed";
+    path?: string;
+    source?: string;
+  }) => apiPost<DryRunPreview>("/api/primitives/action/preview", req),
+  executePrimitiveAction: (req: {
+    action: "upgrade" | "migrate-to-apm" | "remove";
+    kind: "mcp" | "hook" | "command" | "lsp" | "prompt";
+    name: string;
+    harnessId?: string;
+    owningManager?: string;
+    scope?: "global" | "project" | "mixed";
+    path?: string;
+    source?: string;
+  }) => apiPost<ActionResult>("/api/primitives/action/execute", req),
   getSessions: () =>
     apiGet<{ sessions: readonly SessionSummary[]; total: number }>("/api/sessions"),
   getSessionDetail: (transcriptPath: string, harnessId: string) =>
@@ -356,6 +376,9 @@ export function App() {
   const [primitiveTab, setPrimitiveTab] = useState<"mcp" | "command" | "prompt" | "hook" | "lsp">(
     "mcp",
   );
+  const [primitiveSearch, setPrimitiveSearch] = useState("");
+  const [primitiveHealthFilter, setPrimitiveHealthFilter] = useState<"all" | "drifted">("all");
+  const [primitiveManagerFilter, setPrimitiveManagerFilter] = useState<string>("all");
   const [sessionsData, setSessionsData] = useState<readonly SessionSummary[]>([]);
   const [sessionSearch, setSessionSearch] = useState("");
   const [sessionHarnessFilter, setSessionHarnessFilter] = useState<string>("all");
@@ -828,6 +851,32 @@ export function App() {
     const req = { skillIds, cleanupLegacyLockfiles: true };
     const preview = await client.previewMigrateToApm(req);
     setPreviewModal({ preview, execute: () => client.executeMigrateToApm(req) });
+  };
+
+  const openPrimitiveActionPreview = async (req: {
+    action: "upgrade" | "migrate-to-apm" | "remove";
+    kind: "mcp" | "hook" | "command" | "lsp" | "prompt";
+    name: string;
+    harnessId?: string;
+    owningManager?: string;
+    scope?: "global" | "project" | "mixed";
+    path?: string;
+    source?: string;
+  }) => {
+    const preview = await client.previewPrimitiveAction(req);
+    setPreviewModal({
+      preview,
+      execute: async () => {
+        const res = await client.executePrimitiveAction(req);
+        if (res.success) {
+          void client
+            .getPrimitives()
+            .then(setPrimitivesData)
+            .catch(() => undefined);
+        }
+        return res;
+      },
+    });
   };
 
   const toggleSidebarSection = (section: "monitor" | "primitives" | "maintain" | "harnesses") => {
@@ -3106,6 +3155,48 @@ export function App() {
               ))}
             </div>
 
+            <div className="panel" style={{ padding: "10px 14px" }}>
+              <div className="filter-bar">
+                <input
+                  type="search"
+                  className="search-input"
+                  aria-label="Filter primitives"
+                  placeholder={`Search ${primitiveTab}s, paths, or commands...`}
+                  value={primitiveSearch}
+                  onChange={(e) => setPrimitiveSearch(e.target.value)}
+                />
+                <div className="filter-group">
+                  <select
+                    aria-label="Filter by manager"
+                    value={primitiveManagerFilter}
+                    onChange={(e) => setPrimitiveManagerFilter(e.target.value)}
+                  >
+                    <option value="all">All Managers</option>
+                    <option value="apm">apm</option>
+                    <option value="claude-plugin">claude-plugin</option>
+                    <option value="gemini-extension">gemini-extension</option>
+                    <option value="manual">manual</option>
+                  </select>
+                  <div className="chip-group" role="group" aria-label="Primitive health filter">
+                    <button
+                      type="button"
+                      className={`btn ${primitiveHealthFilter === "all" ? "active-chip" : ""}`}
+                      onClick={() => setPrimitiveHealthFilter("all")}
+                    >
+                      All
+                    </button>
+                    <button
+                      type="button"
+                      className={`btn ${primitiveHealthFilter === "drifted" ? "active-chip" : ""}`}
+                      onClick={() => setPrimitiveHealthFilter("drifted")}
+                    >
+                      Drifted
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             {!primitivesData ? (
               <div className="panel" aria-busy="true">
                 <div className="skeleton-row" />
@@ -3113,19 +3204,38 @@ export function App() {
               </div>
             ) : primitiveTab === "mcp" ? (
               (() => {
+                const q = primitiveSearch.trim().toLowerCase();
+                const filteredMcps = primitivesData.mcpServers.filter((m) => {
+                  if (harnessFilter !== "all" && !m.harnesses.includes(harnessFilter)) return false;
+                  if (
+                    primitiveManagerFilter !== "all" &&
+                    m.owningManager !== primitiveManagerFilter
+                  )
+                    return false;
+                  if (primitiveHealthFilter === "drifted" && !m.hasDrift) return false;
+                  if (!q) return true;
+                  return (
+                    m.name.toLowerCase().includes(q) ||
+                    m.commandOrUrl.toLowerCase().includes(q) ||
+                    m.configPaths.some((p) => p.toLowerCase().includes(q))
+                  );
+                });
                 const matrixHarnesses = Array.from(
-                  new Set(primitivesData.mcpServers.flatMap((m) => m.harnesses)),
+                  new Set(filteredMcps.flatMap((m) => m.harnesses)),
                 ).sort();
-                return primitivesData.mcpServers.length === 0 ? (
-                  <div className="panel empty-state">No MCP servers configured.</div>
+                return filteredMcps.length === 0 ? (
+                  <div className="panel empty-state">No matching MCP servers configured.</div>
                 ) : (
                   <div className="table-wrapper" tabIndex={0}>
                     <table>
                       <thead>
                         <tr>
                           <th scope="col">MCP Server</th>
+                          <th scope="col">Manager</th>
+                          <th scope="col">Scope</th>
                           <th scope="col">Transport</th>
                           <th scope="col">Command / Endpoint</th>
+                          <th scope="col">Tokens</th>
                           {matrixHarnesses.map((hId) => (
                             <th key={hId} scope="col" title={hId}>
                               <span
@@ -3136,36 +3246,131 @@ export function App() {
                               </span>
                             </th>
                           ))}
+                          <th scope="col" style={{ textAlign: "right" }}>
+                            Actions
+                          </th>
                         </tr>
                       </thead>
                       <tbody>
-                        {primitivesData.mcpServers.map((mcp) => (
-                          <tr key={mcp.name}>
-                            <td>
-                              <strong>{mcp.name}</strong>
-                            </td>
-                            <td>
-                              <span className="badge">{mcp.transport}</span>
-                            </td>
-                            <td>
-                              <CopyableText text={mcp.commandOrUrl} maxWidth={320} />
-                            </td>
-                            {matrixHarnesses.map((hId) => {
-                              const enabled = mcp.harnesses.includes(hId);
-                              return (
-                                <td key={hId}>
-                                  {enabled ? (
-                                    <span className="badge ok" title={`Configured in ${hId}`}>
-                                      <Check size={11} aria-hidden="true" />
+                        {filteredMcps.map((mcp) => {
+                          const firstPath = mcp.configPaths[0];
+                          const firstHarness = mcp.harnesses[0];
+                          return (
+                            <tr key={mcp.name}>
+                              <td>
+                                <div className="skill-name-cell">
+                                  <strong>{mcp.name}</strong>
+                                  {mcp.hasDrift && (
+                                    <span
+                                      className="badge warn"
+                                      title={mcp.driftSummary ?? "Conflicting MCP config"}
+                                    >
+                                      <AlertTriangle size={11} aria-hidden="true" />
+                                      <span>drift</span>
                                     </span>
-                                  ) : (
-                                    <span style={{ color: "var(--muted)" }}>—</span>
                                   )}
-                                </td>
-                              );
-                            })}
-                          </tr>
-                        ))}
+                                </div>
+                              </td>
+                              <td>
+                                <span className="badge">{mcp.owningManager}</span>
+                              </td>
+                              <td>
+                                <span className="badge">{mcp.scope}</span>
+                              </td>
+                              <td>
+                                <span className="badge">{mcp.transport}</span>
+                              </td>
+                              <td>
+                                <CopyableText text={mcp.commandOrUrl} maxWidth={260} />
+                              </td>
+                              <td className="mono num">{mcp.estimatedTokens}</td>
+                              {matrixHarnesses.map((hId) => {
+                                const enabled = mcp.harnesses.includes(hId);
+                                return (
+                                  <td key={hId}>
+                                    {enabled ? (
+                                      <span className="badge ok" title={`Configured in ${hId}`}>
+                                        <Check size={11} aria-hidden="true" />
+                                      </span>
+                                    ) : (
+                                      <span style={{ color: "var(--muted)" }}>—</span>
+                                    )}
+                                  </td>
+                                );
+                              })}
+                              <td style={{ textAlign: "right" }}>
+                                <ActionMenu
+                                  label={`Actions for MCP ${mcp.name}`}
+                                  items={[
+                                    {
+                                      id: "upgrade",
+                                      label: "Upgrade",
+                                      icon: <ArrowUpCircle size={13} />,
+                                      onSelect: () =>
+                                        void openPrimitiveActionPreview({
+                                          action: "upgrade",
+                                          kind: "mcp",
+                                          name: mcp.name,
+                                          owningManager: mcp.owningManager,
+                                          scope: mcp.scope,
+                                          ...(firstHarness ? { harnessId: firstHarness } : {}),
+                                          ...(firstPath ? { path: firstPath } : {}),
+                                        }),
+                                    },
+                                    ...(mcp.owningManager !== "apm"
+                                      ? [
+                                          {
+                                            id: "migrate",
+                                            label: "Migrate to APM",
+                                            icon: <Boxes size={13} />,
+                                            onSelect: () =>
+                                              void openPrimitiveActionPreview({
+                                                action: "migrate-to-apm",
+                                                kind: "mcp",
+                                                name: mcp.name,
+                                                owningManager: mcp.owningManager,
+                                                scope: mcp.scope,
+                                                ...(firstHarness
+                                                  ? { harnessId: firstHarness }
+                                                  : {}),
+                                                ...(firstPath ? { path: firstPath } : {}),
+                                              }),
+                                          },
+                                        ]
+                                      : []),
+                                    ...(firstPath
+                                      ? [
+                                          {
+                                            id: "reveal",
+                                            label: "Open config in Finder",
+                                            icon: <FolderOpen size={13} />,
+                                            onSelect: () => void client.revealPath(firstPath),
+                                          },
+                                        ]
+                                      : []),
+                                    {
+                                      id: "remove",
+                                      label: "Remove",
+                                      icon: <Trash2 size={13} />,
+                                      tone: "danger" as const,
+                                      separatorBefore: true,
+                                      onSelect: () =>
+                                        void openPrimitiveActionPreview({
+                                          action: "remove",
+                                          kind: "mcp",
+                                          name: mcp.name,
+                                          owningManager: mcp.owningManager,
+                                          scope: mcp.scope,
+                                          ...(firstHarness ? { harnessId: firstHarness } : {}),
+                                          ...(firstPath ? { path: firstPath } : {}),
+                                        }),
+                                    },
+                                  ]}
+                                />
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -3173,7 +3378,7 @@ export function App() {
               })()
             ) : (
               (() => {
-                const list =
+                const rawList =
                   primitiveTab === "command"
                     ? primitivesData.commands
                     : primitiveTab === "prompt"
@@ -3181,24 +3386,64 @@ export function App() {
                       : primitiveTab === "hook"
                         ? primitivesData.hooks
                         : primitivesData.lsps;
+                const q = primitiveSearch.trim().toLowerCase();
+                const list = rawList.filter((item) => {
+                  if (harnessFilter !== "all" && item.harnessId !== harnessFilter) return false;
+                  if (
+                    primitiveManagerFilter !== "all" &&
+                    item.owningManager !== primitiveManagerFilter
+                  ) {
+                    return false;
+                  }
+                  if (primitiveHealthFilter === "drifted" && !item.hasDrift) return false;
+                  if (!q) return true;
+                  return (
+                    item.name.toLowerCase().includes(q) ||
+                    item.path.toLowerCase().includes(q) ||
+                    (item.detail?.toLowerCase().includes(q) ?? false)
+                  );
+                });
                 return list.length === 0 ? (
-                  <div className="panel empty-state">No {primitiveTab}s discovered.</div>
+                  <div className="panel empty-state">No matching {primitiveTab}s discovered.</div>
                 ) : (
                   <div className="table-wrapper" tabIndex={0}>
                     <table>
                       <thead>
                         <tr>
                           <th scope="col">Name</th>
+                          <th scope="col">Manager</th>
+                          <th scope="col">Scope</th>
                           <th scope="col">Harness</th>
                           <th scope="col">Detail</th>
+                          <th scope="col">Tokens</th>
                           <th scope="col">Path</th>
+                          <th scope="col" style={{ textAlign: "right" }}>
+                            Actions
+                          </th>
                         </tr>
                       </thead>
                       <tbody>
                         {list.map((item) => (
                           <tr key={item.id}>
                             <td>
-                              <strong>{item.name}</strong>
+                              <div className="skill-name-cell">
+                                <strong>{item.name}</strong>
+                                {item.hasDrift && (
+                                  <span
+                                    className="badge warn"
+                                    title={item.driftSummary ?? "Duplicate or drifted primitive"}
+                                  >
+                                    <AlertTriangle size={11} aria-hidden="true" />
+                                    <span>drift</span>
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                            <td>
+                              <span className="badge">{item.owningManager}</span>
+                            </td>
+                            <td>
+                              <span className="badge">{item.scope}</span>
                             </td>
                             <td>
                               <span
@@ -3209,8 +3454,73 @@ export function App() {
                               </span>
                             </td>
                             <td style={{ color: "var(--muted)" }}>{item.detail ?? "—"}</td>
+                            <td className="mono num">{item.estimatedTokens}</td>
                             <td>
-                              <CopyableText text={item.path} maxWidth={400} />
+                              <CopyableText text={item.path} maxWidth={320} />
+                            </td>
+                            <td style={{ textAlign: "right" }}>
+                              <ActionMenu
+                                label={`Actions for ${item.name}`}
+                                items={[
+                                  {
+                                    id: "upgrade",
+                                    label: "Upgrade",
+                                    icon: <ArrowUpCircle size={13} />,
+                                    onSelect: () =>
+                                      void openPrimitiveActionPreview({
+                                        action: "upgrade",
+                                        kind: item.kind,
+                                        name: item.name,
+                                        harnessId: item.harnessId,
+                                        owningManager: item.owningManager,
+                                        scope: item.scope,
+                                        path: item.path,
+                                      }),
+                                  },
+                                  ...(item.owningManager !== "apm"
+                                    ? [
+                                        {
+                                          id: "migrate",
+                                          label: "Migrate to APM",
+                                          icon: <Boxes size={13} />,
+                                          onSelect: () =>
+                                            void openPrimitiveActionPreview({
+                                              action: "migrate-to-apm",
+                                              kind: item.kind,
+                                              name: item.name,
+                                              harnessId: item.harnessId,
+                                              owningManager: item.owningManager,
+                                              scope: item.scope,
+                                              path: item.path,
+                                            }),
+                                        },
+                                      ]
+                                    : []),
+                                  {
+                                    id: "reveal",
+                                    label: "Open in Finder",
+                                    icon: <FolderOpen size={13} />,
+                                    onSelect: () => void client.revealPath(item.path),
+                                  },
+                                  {
+                                    id: "remove",
+                                    label: "Remove",
+                                    icon: <Trash2 size={13} />,
+                                    tone: "danger" as const,
+                                    separatorBefore: true,
+                                    onSelect: () =>
+                                      void openPrimitiveActionPreview({
+                                        action: "remove",
+                                        kind: item.kind,
+                                        name: item.name,
+                                        harnessId: item.harnessId,
+                                        owningManager: item.owningManager,
+                                        scope: item.scope,
+                                        path: item.path,
+                                      }),
+                                  },
+                                ]}
+                              />
                             </td>
                           </tr>
                         ))}

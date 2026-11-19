@@ -1,11 +1,26 @@
 import type { HarnessId } from "./harness.js";
+import type { PackageManager } from "./provenance.js";
+
+export interface PrimitiveExposure {
+  readonly harnessId: HarnessId;
+  readonly scope: "global" | "project";
+  readonly path: string;
+  readonly detail?: string;
+}
 
 export interface McpServerEntry {
+  readonly id: string;
   readonly name: string;
   readonly commandOrUrl: string;
   readonly transport: "stdio" | "http" | "sse";
   readonly harnesses: readonly HarnessId[];
   readonly configPaths: readonly string[];
+  readonly scope: "global" | "project" | "mixed";
+  readonly owningManager: PackageManager;
+  readonly exposures: readonly PrimitiveExposure[];
+  readonly hasDrift: boolean;
+  readonly driftSummary?: string;
+  readonly estimatedTokens: number;
 }
 
 export interface PrimitiveEntry {
@@ -15,6 +30,18 @@ export interface PrimitiveEntry {
   readonly harnessId: HarnessId;
   readonly path: string;
   readonly detail?: string;
+  readonly scope: "global" | "project";
+  readonly owningManager: PackageManager;
+  readonly exposures: readonly PrimitiveExposure[];
+  readonly hasDrift: boolean;
+  readonly driftSummary?: string;
+  readonly estimatedTokens: number;
+}
+
+export interface PrimitivesSummary {
+  readonly totalPrimitives: number;
+  readonly driftedCount: number;
+  readonly totalEstimatedTokens: number;
 }
 
 export interface PrimitivesSnapshot {
@@ -24,6 +51,7 @@ export interface PrimitivesSnapshot {
   readonly prompts: readonly PrimitiveEntry[];
   readonly hooks: readonly PrimitiveEntry[];
   readonly lsps: readonly PrimitiveEntry[];
+  readonly summary: PrimitivesSummary;
 }
 
 export interface SessionSummary {

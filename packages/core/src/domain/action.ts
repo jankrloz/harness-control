@@ -82,3 +82,14 @@ export interface ManagerDelegationTarget {
   readonly manager: PackageManager;
   readonly managedId: string;
 }
+
+export interface PrimitiveActionRequest {
+  readonly action: "upgrade" | "migrate-to-apm" | "remove";
+  readonly kind: "mcp" | "hook" | "command" | "lsp" | "prompt";
+  readonly name: string;
+  readonly harnessId?: string;
+  readonly owningManager?: string;
+  readonly scope?: "global" | "project" | "mixed";
+  readonly path?: string;
+  readonly source?: string;
+}

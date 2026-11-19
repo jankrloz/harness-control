@@ -469,6 +469,49 @@ export function createServerApp(deps: ServerDeps = {}): Hono {
     return c.json(primitives);
   });
 
+  const primitiveActionSchema = z.object({
+    action: z.enum(["upgrade", "migrate-to-apm", "remove"]),
+    kind: z.enum(["mcp", "hook", "command", "lsp", "prompt"]),
+    name: z.string().min(1),
+    harnessId: z.string().optional(),
+    owningManager: z.string().optional(),
+    scope: z.enum(["global", "project", "mixed"]).optional(),
+    path: z.string().optional(),
+    source: z.string().optional(),
+  });
+
+  app.post("/api/primitives/action/preview", async (c) => {
+    const parsed = primitiveActionSchema.parse(await c.req.json());
+    return c.json(
+      actionService.previewPrimitiveAction({
+        action: parsed.action,
+        kind: parsed.kind,
+        name: parsed.name,
+        ...(parsed.harnessId ? { harnessId: parsed.harnessId } : {}),
+        ...(parsed.owningManager ? { owningManager: parsed.owningManager } : {}),
+        ...(parsed.scope ? { scope: parsed.scope } : {}),
+        ...(parsed.path ? { path: parsed.path } : {}),
+        ...(parsed.source ? { source: parsed.source } : {}),
+      }),
+    );
+  });
+
+  app.post("/api/primitives/action/execute", async (c) => {
+    const parsed = primitiveActionSchema.parse(await c.req.json());
+    return c.json(
+      await actionService.executePrimitiveAction({
+        action: parsed.action,
+        kind: parsed.kind,
+        name: parsed.name,
+        ...(parsed.harnessId ? { harnessId: parsed.harnessId } : {}),
+        ...(parsed.owningManager ? { owningManager: parsed.owningManager } : {}),
+        ...(parsed.scope ? { scope: parsed.scope } : {}),
+        ...(parsed.path ? { path: parsed.path } : {}),
+        ...(parsed.source ? { source: parsed.source } : {}),
+      }),
+    );
+  });
+
   app.get("/api/sessions", async (c) => {
     const sessions = await scanSessions();
     return c.json({ sessions, total: sessions.length });

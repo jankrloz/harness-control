@@ -6,6 +6,7 @@ import type {
   MigrateToApmRequest,
   PlannedCommand,
   PlannedPathChange,
+  PrimitiveActionRequest,
   RemoveSkillRequest,
   RepairLinkRequest,
   SkillRecord,
@@ -408,6 +409,149 @@ export class ActionService {
 
   async executeRepairLink(req: RepairLinkRequest): Promise<ActionResult> {
     const preview = this.previewRepairLink(req);
+    return this.executePreview(preview);
+  }
+
+  previewPrimitiveAction(req: PrimitiveActionRequest): DryRunPreview {
+    const commands: PlannedCommand[] = [];
+    const warnings: string[] = [];
+    const isGlobal = req.scope !== "project";
+    const mgr = req.owningManager ?? "manual";
+
+    if (req.action === "upgrade") {
+      if (mgr === "apm") {
+        commands.push({
+          command: "apm",
+          args: isGlobal ? ["update", "-g"] : ["update"],
+          description: `Upgrade '${req.name}' (${req.kind}) via APM`,
+        });
+      } else if (mgr === "claude-plugin") {
+        commands.push({
+          command: "claude",
+          args: ["plugin", "update", req.name],
+          description: `Update Claude plugin '${req.name}'`,
+        });
+      } else if (mgr === "gemini-extension") {
+        commands.push({
+          command: "gemini",
+          args: ["extensions", "update", req.name],
+          description: `Update Gemini extension '${req.name}'`,
+        });
+      } else {
+        warnings.push(
+          `'${req.name}' (${req.kind}) is manually configured; no package manager owns it. Migrate to APM or edit ${req.path ?? "its config"} directly.`,
+        );
+      }
+    } else if (req.action === "migrate-to-apm") {
+      if (mgr === "apm") {
+        warnings.push(`'${req.name}' (${req.kind}) is already managed by APM.`);
+      } else if (req.kind === "mcp") {
+        const target = req.source ?? req.name;
+        commands.push({
+          command: "apm",
+          args: isGlobal ? ["mcp", "install", target, "-g"] : ["mcp", "install", target],
+          description: `Install MCP server '${target}' via APM`,
+        });
+        if (req.harnessId === "claude" || mgr === "claude-plugin") {
+          commands.push({
+            command: "claude",
+            args: [
+              mgr === "claude-plugin" ? "plugin" : "mcp",
+              mgr === "claude-plugin" ? "uninstall" : "remove",
+              req.name,
+            ],
+            description: `Remove legacy Claude ${mgr === "claude-plugin" ? "plugin" : "MCP"} '${req.name}'`,
+          });
+        } else if (req.harnessId === "gemini" || mgr === "gemini-extension") {
+          commands.push({
+            command: "gemini",
+            args: [
+              mgr === "gemini-extension" ? "extensions" : "mcp",
+              mgr === "gemini-extension" ? "uninstall" : "remove",
+              req.name,
+            ],
+            description: `Remove legacy Gemini entry '${req.name}'`,
+          });
+        } else {
+          warnings.push(
+            `After APM installs '${req.name}', remove any manual JSON/TOML entry in ${req.path ?? "harness config"} if needed.`,
+          );
+        }
+      } else {
+        const source = req.source ?? req.name;
+        commands.push({
+          command: "apm",
+          args: isGlobal ? ["install", source, "-g"] : ["install", source],
+          description: `Install '${source}' (${req.kind}) via APM`,
+        });
+        if (mgr === "claude-plugin") {
+          commands.push({
+            command: "claude",
+            args: ["plugin", "uninstall", req.name],
+            description: `Uninstall legacy Claude plugin '${req.name}'`,
+          });
+        } else if (mgr === "gemini-extension") {
+          commands.push({
+            command: "gemini",
+            args: ["extensions", "uninstall", req.name],
+            description: `Uninstall legacy Gemini extension '${req.name}'`,
+          });
+        } else {
+          warnings.push(
+            `Legacy ${req.kind} file at ${req.path ?? "config"} will remain untouched (direct rm is disabled).`,
+          );
+        }
+      }
+    } else if (req.action === "remove") {
+      if (mgr === "apm") {
+        commands.push({
+          command: "apm",
+          args: isGlobal ? ["uninstall", req.name, "-g"] : ["uninstall", req.name],
+          description: `Uninstall '${req.name}' (${req.kind}) via APM`,
+        });
+      } else if (mgr === "claude-plugin") {
+        commands.push({
+          command: "claude",
+          args: ["plugin", "uninstall", req.name],
+          description: `Uninstall Claude plugin '${req.name}'`,
+        });
+      } else if (mgr === "gemini-extension") {
+        commands.push({
+          command: "gemini",
+          args: ["extensions", "uninstall", req.name],
+          description: `Uninstall Gemini extension '${req.name}'`,
+        });
+      } else if (req.kind === "mcp" && req.harnessId === "claude") {
+        commands.push({
+          command: "claude",
+          args: ["mcp", "remove", req.name],
+          description: `Remove MCP server '${req.name}' via Claude CLI`,
+        });
+      } else if (req.kind === "mcp" && req.harnessId === "gemini") {
+        commands.push({
+          command: "gemini",
+          args: ["mcp", "remove", req.name],
+          description: `Remove MCP server '${req.name}' via Gemini CLI`,
+        });
+      } else {
+        warnings.push(
+          `'${req.name}' (${req.kind}) has no CLI uninstall command. Direct file deletion (rm) is disabled; remove from ${req.path ?? "its config"} manually.`,
+        );
+      }
+    }
+
+    return {
+      action: req.action,
+      summary: `${req.action} ${req.kind} '${req.name}'`,
+      targetSkillIds: [],
+      commands,
+      pathChanges: [],
+      warnings,
+    };
+  }
+
+  async executePrimitiveAction(req: PrimitiveActionRequest): Promise<ActionResult> {
+    const preview = this.previewPrimitiveAction(req);
     return this.executePreview(preview);
   }
 

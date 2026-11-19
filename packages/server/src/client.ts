@@ -147,6 +147,32 @@ export class DaemonClient {
     return this.request("/api/primitives");
   }
 
+  async previewPrimitiveAction(req: {
+    action: "upgrade" | "migrate-to-apm" | "remove";
+    kind: "mcp" | "hook" | "command" | "lsp" | "prompt";
+    name: string;
+    harnessId?: string;
+    owningManager?: string;
+    scope?: "global" | "project" | "mixed";
+    path?: string;
+    source?: string;
+  }): Promise<DryRunPreview> {
+    return this.post("/api/primitives/action/preview", req);
+  }
+
+  async executePrimitiveAction(req: {
+    action: "upgrade" | "migrate-to-apm" | "remove";
+    kind: "mcp" | "hook" | "command" | "lsp" | "prompt";
+    name: string;
+    harnessId?: string;
+    owningManager?: string;
+    scope?: "global" | "project" | "mixed";
+    path?: string;
+    source?: string;
+  }): Promise<ActionResult> {
+    return this.post("/api/primitives/action/execute", req);
+  }
+
   async getSessions(): Promise<{ sessions: readonly SessionSummary[]; total: number }> {
     return this.request("/api/sessions");
   }

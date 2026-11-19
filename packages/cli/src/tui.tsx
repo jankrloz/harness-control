@@ -1121,7 +1121,7 @@ function HarnessManagerTui({ client, initialData, initialStatus }: TuiProps) {
               padding={1}
             >
               <text bold color="cyan">
-                {` Primitives — ${primitiveKind.toUpperCase()} ([p] switch kind)`}
+                {` Primitives — ${primitiveKind.toUpperCase()} (${primitives?.summary.totalPrimitives ?? 0} total · ${primitives?.summary.driftedCount ?? 0} drifted · ${primitives?.summary.totalEstimatedTokens ?? 0} tok) ([p] switch kind)`}
               </text>
               <divider />
               {!primitives ? (
@@ -1135,6 +1135,10 @@ function HarnessManagerTui({ client, initialData, initialStatus }: TuiProps) {
                           name: m.name,
                           detail: m.commandOrUrl,
                           harness: m.harnesses.join(","),
+                          manager: m.owningManager,
+                          scope: m.scope,
+                          hasDrift: m.hasDrift,
+                          tokens: m.estimatedTokens,
                         }))
                       : (primitiveKind === "hook"
                           ? primitives.hooks
@@ -1148,15 +1152,24 @@ function HarnessManagerTui({ client, initialData, initialStatus }: TuiProps) {
                           name: entry.name,
                           detail: entry.detail ?? entry.path,
                           harness: entry.harnessId,
+                          manager: entry.owningManager,
+                          scope: entry.scope,
+                          hasDrift: entry.hasDrift,
+                          tokens: entry.estimatedTokens,
                         }));
                   if (list.length === 0) {
                     return <text dim> No {primitiveKind} entries found.</text>;
                   }
                   return list.slice(0, pageSize).map((item, idx) => {
                     const isActive = idx === primitiveIdx;
+                    const driftFlag = item.hasDrift ? "!DRIFT" : "ok    ";
                     return (
-                      <text key={item.id} bold={isActive} color={isActive ? "cyan" : "white"}>
-                        {`${isActive ? ">" : " "} [${item.harness.slice(0, 10).padEnd(10)}] ${item.name.slice(0, 26).padEnd(26)} ${item.detail.slice(0, 48)}`}
+                      <text
+                        key={item.id}
+                        bold={isActive}
+                        color={isActive ? "cyan" : item.hasDrift ? "yellow" : "white"}
+                      >
+                        {`${isActive ? ">" : " "} [${item.manager.slice(0, 8).padEnd(8)}] ${item.name.slice(0, 22).padEnd(22)} ${item.scope.padEnd(7)} ${driftFlag} ${String(item.tokens).padStart(5)}t ${item.harness.slice(0, 14)}`}
                       </text>
                     );
                   });

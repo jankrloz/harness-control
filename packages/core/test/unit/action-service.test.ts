@@ -150,6 +150,36 @@ describe("ActionService", () => {
     ]);
   });
 
+  it("previews primitive actions (migrate MCP to APM and remove)", () => {
+    const executor = makeExecutor();
+    const service = new ActionService(executor);
+
+    const migratePreview = service.previewPrimitiveAction({
+      action: "migrate-to-apm",
+      kind: "mcp",
+      name: "context7",
+      harnessId: "claude",
+      owningManager: "manual",
+      scope: "global",
+    });
+
+    expect(migratePreview.commands.map((c) => `${c.command} ${c.args.join(" ")}`)).toEqual([
+      "apm mcp install context7 -g",
+      "claude mcp remove context7",
+    ]);
+
+    const removeManual = service.previewPrimitiveAction({
+      action: "remove",
+      kind: "hook",
+      name: "PreToolUse",
+      harnessId: "claude",
+      owningManager: "manual",
+      path: "/Users/me/.claude/settings.json",
+    });
+    expect(removeManual.commands).toHaveLength(0);
+    expect(removeManual.warnings[0]).toContain("Direct file deletion (rm) is disabled");
+  });
+
   it("removes all skills by source via manager commands", () => {
     const executor = makeExecutor();
     const service = new ActionService(executor);
