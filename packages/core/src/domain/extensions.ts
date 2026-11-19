@@ -37,6 +37,28 @@ export interface SessionSummary {
   readonly transcriptPath: string;
 }
 
+export interface SessionMessage {
+  readonly role: "user" | "assistant" | "system";
+  readonly timestamp?: string;
+  readonly model?: string;
+  readonly tokens?: number;
+  readonly content: string;
+}
+
+export interface SessionDetail {
+  readonly id: string;
+  readonly harnessId: HarnessId;
+  readonly title: string;
+  readonly projectFolder?: string;
+  readonly transcriptPath: string;
+  readonly updatedAt: string;
+  readonly model?: string;
+  readonly promptCount: number;
+  readonly totalTokens: number;
+  readonly estimatedCostUsd: number;
+  readonly messages: readonly SessionMessage[];
+}
+
 export interface UsageRequestLog {
   readonly timestamp: string;
   readonly harnessId: HarnessId;

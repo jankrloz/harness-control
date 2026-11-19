@@ -36,7 +36,7 @@
 - **Zero telemetry or analytics:** No tracking, no cloud accounts, no background uploads.
 - **Local-only scanning:** Skill directories, `tiktoken` counts, MCP/hook configs, and `.jsonl` session transcripts are read exclusively on your machine through a local daemon bound to `127.0.0.1:4318`.
 - **Your workspace stays private:** Project paths, session titles, prompts, and cost estimates never leave your computer.
-- **Explicit network actions only:** Outbound requests only happen when *you* explicitly search `skills.sh` in **Discover** or run an update check/install via your local package manager (`apm`, `npx skills`).
+- **Explicit network actions only:** Outbound requests only happen when _you_ explicitly search `skills.sh` in **Discover** or run an update check/install via your local package manager (`apm`, `npx skills`).
 
 ---
 
@@ -55,21 +55,27 @@ AI coding assistants (`Claude Code`, `Codex`, `Gemini CLI`, `OpenCode`, `Cursor`
 ## Screenshots
 
 ### Home Overview & Metrics
+
 ![Home Overview](docs/screenshots/web-home.png)
 
 ### Skills Library (Scope, Manager, Source & Health Filters)
+
 ![Skills Library](docs/screenshots/web-library.png)
 
 ### Cleanup Planner & Expected Token Impact
+
 ![Cleanup Planner](docs/screenshots/web-cleanup.png)
 
 ### Primitives & MCP Cross-Harness Matrix
+
 ![Primitives MCP Matrix](docs/screenshots/web-primitives.png)
 
 ### Unified Sessions Explorer
+
 ![Sessions Explorer](docs/screenshots/web-sessions.png)
 
 ### Request & Model Usage Dashboard
+
 ![Usage Dashboard](docs/screenshots/web-usage.png)
 
 ---
@@ -93,11 +99,13 @@ AI coding assistants (`Claude Code`, `Codex`, `Gemini CLI`, `OpenCode`, `Cursor`
 ### 1. Homebrew (macOS)
 
 Desktop app:
+
 ```bash
 brew install --cask jankrloz/tap/harness-control
 ```
 
 CLI & TUI:
+
 ```bash
 brew install jankrloz/tap/harness-control
 ```
@@ -105,6 +113,7 @@ brew install jankrloz/tap/harness-control
 ### 2. Desktop Installers (macOS, Linux, Windows)
 
 Download native installers from [GitHub Releases](https://github.com/jankrloz/harness-control/releases):
+
 - **macOS**: `.dmg` / `.app` (Universal Apple Silicon + Intel)
 - **Linux**: `.AppImage` / `.deb`
 - **Windows**: `.msi` / `.exe`
@@ -112,6 +121,7 @@ Download native installers from [GitHub Releases](https://github.com/jankrloz/ha
 ### 3. npm / npx / pnpm (CLI & TUI)
 
 Run immediately with `npx` or install globally:
+
 ```bash
 npx @harness-control/cli
 ```
@@ -123,6 +133,7 @@ pnpm add -g @harness-control/cli
 ### 4. Manual Clone (From Source)
 
 Requires Node.js `>= 22` and `pnpm >= 10`:
+
 ```bash
 git clone https://github.com/jankrloz/harness-control.git
 cd harness-control
@@ -136,11 +147,13 @@ node packages/cli/dist/bin.js
 ## Usage
 
 Launch the interactive 7-module TUI:
+
 ```bash
 harness-control
 ```
 
 Run CLI commands directly:
+
 ```bash
 harness-control cleanup --only duplicates
 harness-control tokens

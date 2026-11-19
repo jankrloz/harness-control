@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
+import path from "node:path";
 import { promisify } from "node:util";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
@@ -11,6 +12,7 @@ import {
   ConfigStore,
   executeCleanupQueue,
   FsSkillScanner,
+  getSessionDetail,
   GitInspector,
   InventoryService,
   NativeCliAdapter,
@@ -470,6 +472,27 @@ export function createServerApp(deps: ServerDeps = {}): Hono {
   app.get("/api/sessions", async (c) => {
     const sessions = await scanSessions();
     return c.json({ sessions, total: sessions.length });
+  });
+
+  app.get("/api/sessions/detail", async (c) => {
+    const transcriptPath = c.req.query("path");
+    const harnessId = c.req.query("harnessId") || "claude";
+    if (!transcriptPath) return c.json({ error: "path query parameter is required" }, 400);
+    const detail = await getSessionDetail(transcriptPath, harnessId);
+    return c.json(detail);
+  });
+
+  app.post("/api/system/reveal", async (c) => {
+    const body = z.object({ path: z.string().min(1) }).parse(await c.req.json());
+    await fs.stat(body.path);
+    if (process.platform === "darwin") {
+      await execFileAsync("open", ["-R", body.path]);
+    } else if (process.platform === "win32") {
+      await execFileAsync("explorer", [`/select,${body.path}`]);
+    } else {
+      await execFileAsync("xdg-open", [path.dirname(body.path)]);
+    }
+    return c.json({ ok: true });
   });
 
   app.get("/api/usage-metrics", async (c) => {

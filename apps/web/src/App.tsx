@@ -11,6 +11,7 @@ import type {
   PrimitiveKind,
   PrimitivesSnapshot,
   RemoveTargetScope,
+  SessionDetail,
   SessionSummary,
   SkillRecord,
   UsageDashboardSnapshot,
@@ -25,6 +26,7 @@ import type {
 import {
   AlertTriangle,
   ArrowDown,
+  ArrowLeft,
   ArrowUp,
   ArrowUpCircle,
   ArrowUpDown,
@@ -42,6 +44,7 @@ import {
   FileText,
   Flame,
   FolderGit2,
+  FolderOpen,
   GitCompare,
   Globe,
   History,
@@ -139,6 +142,12 @@ const client = {
   getPrimitives: () => apiGet<PrimitivesSnapshot>("/api/primitives"),
   getSessions: () =>
     apiGet<{ sessions: readonly SessionSummary[]; total: number }>("/api/sessions"),
+  getSessionDetail: (transcriptPath: string, harnessId: string) =>
+    apiGet<SessionDetail>(
+      `/api/sessions/detail?path=${encodeURIComponent(transcriptPath)}&harnessId=${encodeURIComponent(harnessId)}`,
+    ),
+  revealPath: (targetPath: string) =>
+    apiPost<{ ok: boolean }>("/api/system/reveal", { path: targetPath }),
   getUsageMetrics: () => apiGet<UsageDashboardSnapshot>("/api/usage-metrics"),
 };
 
@@ -340,6 +349,8 @@ export function App() {
   const [sessionSortBy, setSessionSortBy] = useState<"newest" | "oldest" | "title" | "messages">(
     "newest",
   );
+  const [selectedSessionDetail, setSelectedSessionDetail] = useState<SessionDetail | null>(null);
+  const [sessionDetailLoading, setSessionDetailLoading] = useState(false);
   const [usageMetricsData, setUsageMetricsData] = useState<UsageDashboardSnapshot | null>(null);
   const [tokensTab, setTokensTab] = useState<"budgets" | "requests">("budgets");
   const [installPreview, setInstallPreview] = useState<DryRunPreview | null>(null);
@@ -3139,201 +3150,397 @@ export function App() {
 
         {view === "sessions" && (
           <div style={{ display: "grid", gap: 14, minWidth: 0 }}>
-            <div className="filter-panel">
-              <div className="filter-row">
-                <div className="filter-group" style={{ flex: 1 }}>
-                  <input
-                    type="search"
-                    aria-label="Search sessions"
-                    placeholder="Search titles, folders, or session IDs..."
-                    value={sessionSearch}
-                    onChange={(e) => setSessionSearch(e.target.value)}
-                    style={{ minWidth: 260, flex: "1 1 260px", maxWidth: 420 }}
-                  />
-                  <select
-                    aria-label="Filter sessions by harness"
-                    value={sessionHarnessFilter}
-                    onChange={(e) => setSessionHarnessFilter(e.target.value)}
-                  >
-                    <option value="all">All Harnesses</option>
-                    {Array.from(new Set(sessionsData.map((s) => s.harnessId)))
-                      .sort()
-                      .map((h) => (
-                        <option key={h} value={h}>
-                          {h}
-                        </option>
-                      ))}
-                  </select>
-                </div>
-                <div className="filter-group">
-                  <span className="filter-group-label">Sort</span>
-                  <select
-                    aria-label="Sort sessions"
-                    value={sessionSortBy}
-                    onChange={(e) =>
-                      setSessionSortBy(e.target.value as "newest" | "oldest" | "title" | "messages")
-                    }
-                  >
-                    <option value="newest">Newest first</option>
-                    <option value="oldest">Oldest first</option>
-                    <option value="title">Title (A–Z)</option>
-                    <option value="messages">Most messages</option>
-                  </select>
-                  <span className="filter-group-label">Group</span>
-                  <div className="chip-group" role="group" aria-label="Group sessions">
-                    <button
-                      type="button"
-                      className={`btn ${sessionGroupBy === "time" ? "active-chip" : ""}`}
-                      onClick={() => setSessionGroupBy("time")}
-                    >
-                      By time
-                    </button>
-                    <button
-                      type="button"
-                      className={`btn ${sessionGroupBy === "project" ? "active-chip" : ""}`}
-                      onClick={() => setSessionGroupBy("project")}
-                    >
-                      By project
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {(() => {
-              const filteredSessions = sessionsData
-                .filter((s) => {
-                  if (sessionHarnessFilter !== "all" && s.harnessId !== sessionHarnessFilter) {
-                    return false;
-                  }
-                  const q = sessionSearch.trim().toLowerCase();
-                  if (!q) return true;
-                  return (
-                    s.title.toLowerCase().includes(q) ||
-                    (s.projectFolder?.toLowerCase().includes(q) ?? false) ||
-                    (s.model?.toLowerCase().includes(q) ?? false) ||
-                    s.id.toLowerCase().includes(q)
-                  );
-                })
-                .sort((a, b) => {
-                  switch (sessionSortBy) {
-                    case "oldest":
-                      return Date.parse(a.updatedAt) - Date.parse(b.updatedAt);
-                    case "title":
-                      return a.title.localeCompare(b.title);
-                    case "messages":
-                      return b.messageCount - a.messageCount;
-                    case "newest":
-                    default:
-                      return Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
-                  }
-                });
-              if (filteredSessions.length === 0) {
-                return <div className="panel empty-state">No sessions found.</div>;
-              }
-              const startOfToday = new Date();
-              startOfToday.setHours(0, 0, 0, 0);
-              const todayMs = startOfToday.getTime();
-              const yesterdayMs = todayMs - 86_400_000;
-              const weekMs = todayMs - 7 * 86_400_000;
-              const groups = new Map<string, SessionSummary[]>();
-              for (const s of filteredSessions) {
-                let key = "Earlier";
-                if (sessionGroupBy === "project") {
-                  key = s.projectFolder ?? "Unknown workspace";
-                } else {
-                  const t = Date.parse(s.updatedAt);
-                  key =
-                    t >= todayMs
-                      ? "Today"
-                      : t >= yesterdayMs
-                        ? "Yesterday"
-                        : t >= weekMs
-                          ? "This week"
-                          : "Earlier";
-                }
-                const list = groups.get(key) ?? [];
-                list.push(s);
-                groups.set(key, list);
-              }
-              return Array.from(groups.entries()).map(([groupLabel, items]) => (
-                <section key={groupLabel} className="panel" style={{ display: "grid", gap: 8 }}>
+            {selectedSessionDetail ? (
+              <div style={{ display: "grid", gap: 14, minWidth: 0 }}>
+                <section className="panel" style={{ padding: 16, display: "grid", gap: 12 }}>
                   <div
                     style={{
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "space-between",
+                      gap: 12,
+                      flexWrap: "wrap",
                     }}
                   >
-                    <h2 style={{ margin: 0 }}>{groupLabel}</h2>
-                    <span className="badge">{items.length}</span>
+                    <div
+                      style={{ display: "inline-flex", alignItems: "center", gap: 10, minWidth: 0 }}
+                    >
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => setSelectedSessionDetail(null)}
+                      >
+                        <ArrowLeft size={13} aria-hidden="true" />
+                        <span>Sessions</span>
+                      </button>
+                      <HarnessIcon harnessId={selectedSessionDetail.harnessId} size={18} />
+                      <h2
+                        style={{
+                          margin: 0,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                        title={selectedSessionDetail.title}
+                      >
+                        {selectedSessionDetail.title}
+                      </h2>
+                    </div>
+                    <div className="toolbar">
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => {
+                          void navigator.clipboard.writeText(selectedSessionDetail.id);
+                          setBanner(`Copied session ID: ${selectedSessionDetail.id}`);
+                        }}
+                      >
+                        <Copy size={12} aria-hidden="true" />
+                        <span>Copy ID</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => {
+                          void navigator.clipboard.writeText(selectedSessionDetail.transcriptPath);
+                          setBanner("Copied transcript path.");
+                        }}
+                      >
+                        <Copy size={12} aria-hidden="true" />
+                        <span>Copy Path</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="btn primary"
+                        onClick={() => {
+                          void client
+                            .revealPath(selectedSessionDetail.transcriptPath)
+                            .catch((err) =>
+                              setBanner(
+                                `Failed to open Finder: ${err instanceof Error ? err.message : String(err)}`,
+                              ),
+                            );
+                        }}
+                      >
+                        <FolderOpen size={13} aria-hidden="true" />
+                        <span>Open in Finder</span>
+                      </button>
+                    </div>
                   </div>
-                  <div className="table-wrapper" tabIndex={0}>
-                    <table>
-                      <thead>
-                        <tr>
-                          <th scope="col">Harness</th>
-                          <th scope="col">Session</th>
-                          <th scope="col">Session ID</th>
-                          <th scope="col">Path</th>
-                          <th scope="col">Model</th>
-                          <th scope="col">Msgs</th>
-                          <th scope="col">Updated</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {items.map((s) => (
-                          <tr key={s.id}>
-                            <td>
-                              <span
-                                style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
-                                title={s.harnessId}
-                              >
-                                <HarnessIcon harnessId={s.harnessId} size={14} />
-                                <span className="badge">{s.harnessId}</span>
-                              </span>
-                            </td>
-                            <td className="wrap-cell">
-                              <strong>{s.title}</strong>
-                              {s.projectFolder && (
-                                <div
-                                  className="mono"
-                                  title={s.projectFolder}
-                                  style={{ color: "var(--muted)", fontSize: 12 }}
-                                >
-                                  {s.projectFolder}
-                                </div>
-                              )}
-                            </td>
-                            <td>
-                              <CopyableText text={s.id} maxWidth={115} />
-                            </td>
-                            <td>
-                              <CopyableText text={s.transcriptPath} maxWidth={170} />
-                            </td>
-                            <td>
-                              {s.model ? (
-                                <span className="badge">{s.model}</span>
-                              ) : (
-                                <span style={{ color: "var(--muted)" }}>—</span>
-                              )}
-                            </td>
-                            <td className="mono num">{s.messageCount}</td>
-                            <td
-                              className="mono"
-                              style={{ color: "var(--muted)" }}
-                              title={new Date(s.updatedAt).toLocaleString()}
-                            >
-                              {formatRelativeTime(s.updatedAt)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 14,
+                      flexWrap: "wrap",
+                      fontSize: 12.5,
+                      color: "var(--muted)",
+                    }}
+                  >
+                    {selectedSessionDetail.projectFolder && (
+                      <CopyableText text={selectedSessionDetail.projectFolder} maxWidth={340} />
+                    )}
+                    <span>{new Date(selectedSessionDetail.updatedAt).toLocaleString()}</span>
+                    <span className="badge">{selectedSessionDetail.promptCount} prompts</span>
+                    {selectedSessionDetail.model && (
+                      <span className="badge">{selectedSessionDetail.model}</span>
+                    )}
+                    <span className="mono">
+                      {selectedSessionDetail.totalTokens.toLocaleString()} tokens
+                    </span>
+                    <span className="badge ok">
+                      ${selectedSessionDetail.estimatedCostUsd.toFixed(4)}
+                    </span>
                   </div>
                 </section>
-              ));
-            })()}
+
+                <section className="chat-stream" aria-label="Session conversation">
+                  {selectedSessionDetail.messages.length === 0 ? (
+                    <div className="panel empty-state">
+                      No readable conversation messages in this transcript.
+                    </div>
+                  ) : (
+                    selectedSessionDetail.messages.map((m, idx) => (
+                      <article
+                        key={`${m.role}-${idx}`}
+                        className={`chat-turn ${m.role === "user" ? "user" : "assistant"}`}
+                      >
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            gap: 8,
+                            fontSize: 12,
+                            color: "var(--muted)",
+                          }}
+                        >
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                            {m.role === "assistant" && (
+                              <HarnessIcon harnessId={selectedSessionDetail.harnessId} size={13} />
+                            )}
+                            <strong style={{ color: "var(--text)" }}>
+                              {m.role === "user" ? "You" : selectedSessionDetail.harnessId}
+                            </strong>
+                            {m.timestamp && <span>{new Date(m.timestamp).toLocaleString()}</span>}
+                            {m.model && <span className="badge">{m.model}</span>}
+                          </span>
+                          {m.tokens !== undefined && (
+                            <span className="mono">{m.tokens.toLocaleString()} tokens</span>
+                          )}
+                        </div>
+                        <MarkdownViewer content={m.content} />
+                      </article>
+                    ))
+                  )}
+                </section>
+              </div>
+            ) : (
+              <>
+                <div className="filter-panel">
+                  <div className="filter-row">
+                    <div className="filter-group" style={{ flex: 1 }}>
+                      <input
+                        type="search"
+                        aria-label="Search sessions"
+                        placeholder="Search titles, folders, or session IDs..."
+                        value={sessionSearch}
+                        onChange={(e) => setSessionSearch(e.target.value)}
+                        style={{ minWidth: 260, flex: "1 1 260px", maxWidth: 420 }}
+                      />
+                      <select
+                        aria-label="Filter sessions by harness"
+                        value={sessionHarnessFilter}
+                        onChange={(e) => setSessionHarnessFilter(e.target.value)}
+                      >
+                        <option value="all">All Harnesses</option>
+                        {Array.from(new Set(sessionsData.map((s) => s.harnessId)))
+                          .sort()
+                          .map((h) => (
+                            <option key={h} value={h}>
+                              {h}
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+                    <div className="filter-group">
+                      <span className="filter-group-label">Sort</span>
+                      <select
+                        aria-label="Sort sessions"
+                        value={sessionSortBy}
+                        onChange={(e) =>
+                          setSessionSortBy(
+                            e.target.value as "newest" | "oldest" | "title" | "messages",
+                          )
+                        }
+                      >
+                        <option value="newest">Newest first</option>
+                        <option value="oldest">Oldest first</option>
+                        <option value="title">Title (A–Z)</option>
+                        <option value="messages">Most messages</option>
+                      </select>
+                      <span className="filter-group-label">Group</span>
+                      <div className="chip-group" role="group" aria-label="Group sessions">
+                        <button
+                          type="button"
+                          className={`btn ${sessionGroupBy === "time" ? "active-chip" : ""}`}
+                          onClick={() => setSessionGroupBy("time")}
+                        >
+                          By time
+                        </button>
+                        <button
+                          type="button"
+                          className={`btn ${sessionGroupBy === "project" ? "active-chip" : ""}`}
+                          onClick={() => setSessionGroupBy("project")}
+                        >
+                          By project
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {sessionDetailLoading && (
+                  <div className="panel" aria-busy="true">
+                    <div className="skeleton-row" />
+                  </div>
+                )}
+
+                {(() => {
+                  const filteredSessions = sessionsData
+                    .filter((s) => {
+                      if (sessionHarnessFilter !== "all" && s.harnessId !== sessionHarnessFilter) {
+                        return false;
+                      }
+                      const q = sessionSearch.trim().toLowerCase();
+                      if (!q) return true;
+                      return (
+                        s.title.toLowerCase().includes(q) ||
+                        (s.projectFolder?.toLowerCase().includes(q) ?? false) ||
+                        (s.model?.toLowerCase().includes(q) ?? false) ||
+                        s.id.toLowerCase().includes(q)
+                      );
+                    })
+                    .sort((a, b) => {
+                      switch (sessionSortBy) {
+                        case "oldest":
+                          return Date.parse(a.updatedAt) - Date.parse(b.updatedAt);
+                        case "title":
+                          return a.title.localeCompare(b.title);
+                        case "messages":
+                          return b.messageCount - a.messageCount;
+                        case "newest":
+                        default:
+                          return Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
+                      }
+                    });
+                  if (filteredSessions.length === 0) {
+                    return <div className="panel empty-state">No sessions found.</div>;
+                  }
+                  const startOfToday = new Date();
+                  startOfToday.setHours(0, 0, 0, 0);
+                  const todayMs = startOfToday.getTime();
+                  const yesterdayMs = todayMs - 86_400_000;
+                  const weekMs = todayMs - 7 * 86_400_000;
+                  const groups = new Map<string, SessionSummary[]>();
+                  for (const s of filteredSessions) {
+                    let key = "Earlier";
+                    if (sessionGroupBy === "project") {
+                      key = s.projectFolder ?? "Unknown workspace";
+                    } else {
+                      const t = Date.parse(s.updatedAt);
+                      key =
+                        t >= todayMs
+                          ? "Today"
+                          : t >= yesterdayMs
+                            ? "Yesterday"
+                            : t >= weekMs
+                              ? "This week"
+                              : "Earlier";
+                    }
+                    const list = groups.get(key) ?? [];
+                    list.push(s);
+                    groups.set(key, list);
+                  }
+                  return Array.from(groups.entries()).map(([groupLabel, items]) => (
+                    <section key={groupLabel} style={{ display: "grid", gap: 8 }}>
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          padding: "0 4px",
+                        }}
+                      >
+                        <span className="filter-group-label">{groupLabel}</span>
+                        <span className="count-pill">{items.length}</span>
+                      </div>
+                      <div className="session-list">
+                        {items.map((s) => (
+                          <div
+                            key={s.id}
+                            className="session-row"
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => {
+                              setSessionDetailLoading(true);
+                              void client
+                                .getSessionDetail(s.transcriptPath, s.harnessId)
+                                .then(setSelectedSessionDetail)
+                                .finally(() => setSessionDetailLoading(false));
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                setSessionDetailLoading(true);
+                                void client
+                                  .getSessionDetail(s.transcriptPath, s.harnessId)
+                                  .then(setSelectedSessionDetail)
+                                  .finally(() => setSessionDetailLoading(false));
+                              }
+                            }}
+                          >
+                            <div className="session-row-main">
+                              <span style={{ marginTop: 2, flexShrink: 0 }}>
+                                <HarnessIcon harnessId={s.harnessId} size={16} />
+                              </span>
+                              <div style={{ minWidth: 0, display: "grid", gap: 2 }}>
+                                <strong
+                                  style={{
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                    whiteSpace: "nowrap",
+                                  }}
+                                >
+                                  {s.title}
+                                </strong>
+                                <div
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 10,
+                                    flexWrap: "wrap",
+                                    color: "var(--muted)",
+                                    fontSize: 12,
+                                  }}
+                                >
+                                  {s.projectFolder && (
+                                    <span
+                                      style={{
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        gap: 4,
+                                      }}
+                                      title={s.projectFolder}
+                                    >
+                                      <FolderGit2 size={11} aria-hidden="true" />
+                                      <span>{s.projectFolder.split("/").pop()}</span>
+                                    </span>
+                                  )}
+                                  <span className="mono">{s.id.slice(0, 8)}</span>
+                                  {s.model && <span className="badge">{s.model}</span>}
+                                </div>
+                              </div>
+                            </div>
+                            <div className="session-row-meta" onClick={(e) => e.stopPropagation()}>
+                              <button
+                                type="button"
+                                className="icon-ghost-btn"
+                                title={`Copy session ID: ${s.id}`}
+                                aria-label={`Copy session ID ${s.id}`}
+                                onClick={() => {
+                                  void navigator.clipboard.writeText(s.id);
+                                  setBanner(`Copied session ID: ${s.id}`);
+                                }}
+                              >
+                                <Copy size={13} aria-hidden="true" />
+                              </button>
+                              <button
+                                type="button"
+                                className="icon-ghost-btn"
+                                title={`Open in Finder: ${s.transcriptPath}`}
+                                aria-label={`Open in Finder: ${s.transcriptPath}`}
+                                onClick={() => void client.revealPath(s.transcriptPath)}
+                              >
+                                <FolderOpen size={13} aria-hidden="true" />
+                              </button>
+                              <span
+                                className="mono"
+                                style={{ color: "var(--muted)", minWidth: 74, textAlign: "right" }}
+                                title={new Date(s.updatedAt).toLocaleString()}
+                              >
+                                {formatRelativeTime(s.updatedAt)}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  ));
+                })()}
+              </>
+            )}
           </div>
         )}
 

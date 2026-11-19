@@ -12,6 +12,7 @@ import type {
   PrimitivesSnapshot,
   RemoveSkillRequest,
   RepairLinkRequest,
+  SessionDetail,
   SessionSummary,
   SourceCatalogGroup,
   UpgradeRequest,
@@ -148,6 +149,16 @@ export class DaemonClient {
 
   async getSessions(): Promise<{ sessions: readonly SessionSummary[]; total: number }> {
     return this.request("/api/sessions");
+  }
+
+  async getSessionDetail(transcriptPath: string, harnessId: string): Promise<SessionDetail> {
+    return this.request(
+      `/api/sessions/detail?path=${encodeURIComponent(transcriptPath)}&harnessId=${encodeURIComponent(harnessId)}`,
+    );
+  }
+
+  async revealPath(targetPath: string): Promise<{ ok: boolean }> {
+    return this.post("/api/system/reveal", { path: targetPath });
   }
 
   async getUsageMetrics(): Promise<UsageDashboardSnapshot> {

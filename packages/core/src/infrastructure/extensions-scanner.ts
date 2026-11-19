@@ -6,6 +6,8 @@ import type {
   McpServerEntry,
   PrimitiveEntry,
   PrimitivesSnapshot,
+  SessionDetail,
+  SessionMessage,
   SessionSummary,
   UsageDashboardSnapshot,
   UsageHourlyBucket,
@@ -418,6 +420,135 @@ export async function scanSessions(homeOverride?: string, limit = 250): Promise<
   }
 
   return sessions;
+}
+
+function extractFullText(rawContent: unknown): string {
+  if (typeof rawContent === "string") return rawContent.trim();
+  if (Array.isArray(rawContent)) {
+    return rawContent
+      .map((b) =>
+        b && typeof b === "object" && typeof (b as Record<string, unknown>)["text"] === "string"
+          ? String((b as Record<string, unknown>)["text"])
+          : "",
+      )
+      .filter(Boolean)
+      .join("\n\n")
+      .trim();
+  }
+  return "";
+}
+
+export async function getSessionDetail(
+  transcriptPath: string,
+  harnessId: HarnessId,
+): Promise<SessionDetail> {
+  const st = await fs.stat(transcriptPath).catch(() => null);
+  const raw = await fs.readFile(transcriptPath, "utf8").catch(() => "");
+  const lines = raw.split(/\r?\n/).filter((l) => l.trim().length > 0);
+
+  let sessionId: string | undefined;
+  let projectFolder: string | undefined;
+  let model: string | undefined;
+  let title: string | undefined;
+  let promptCount = 0;
+  let totalTokens = 0;
+  let totalCost = 0;
+  const messages: SessionMessage[] = [];
+
+  for (const line of lines) {
+    let obj: Record<string, unknown>;
+    try {
+      obj = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+
+    if (!sessionId && typeof obj["sessionId"] === "string") sessionId = obj["sessionId"];
+    if (!projectFolder && typeof obj["cwd"] === "string") projectFolder = obj["cwd"];
+
+    const payload = obj["payload"] as Record<string, unknown> | undefined;
+    if (payload && typeof payload === "object") {
+      if (!sessionId && typeof payload["id"] === "string") sessionId = payload["id"];
+      if (!projectFolder && typeof payload["cwd"] === "string") projectFolder = payload["cwd"];
+      if (typeof payload["model"] === "string") model = payload["model"];
+    }
+
+    const msg = obj["message"] as Record<string, unknown> | undefined;
+    const msgModel =
+      (typeof msg?.["model"] === "string" ? msg["model"] : undefined) ??
+      (typeof obj["model"] === "string" ? obj["model"] : undefined);
+    if (msgModel) model = msgModel;
+
+    const usage = (msg?.["usage"] ?? obj["usage"]) as Record<string, unknown> | undefined;
+    const inTok = Number(usage?.["input_tokens"] ?? obj["input_tokens"] ?? 0);
+    const outTok = Number(usage?.["output_tokens"] ?? obj["output_tokens"] ?? 0);
+    const cacheTok = Number(
+      usage?.["cache_read_input_tokens"] ??
+        usage?.["cached_input_tokens"] ??
+        obj["cache_read_tokens"] ??
+        0,
+    );
+    const stepTokens = inTok + outTok + cacheTok;
+    if (stepTokens > 0) {
+      totalTokens += stepTokens;
+      totalCost += estimateCostUsd(msgModel ?? model ?? "sonnet", inTok, outTok, cacheTok);
+    }
+
+    const timestamp =
+      (typeof obj["timestamp"] === "string" ? obj["timestamp"] : undefined) ??
+      (typeof obj["created_at"] === "string" ? obj["created_at"] : undefined);
+
+    const roleRaw = obj["role"] ?? obj["type"] ?? msg?.["role"] ?? payload?.["role"];
+    let role: "user" | "assistant" | "system" | null = null;
+    let text = "";
+
+    if (roleRaw === "user" || roleRaw === "USER_INPUT") {
+      role = "user";
+      text = stripPromptTags(extractFullText(obj["content"]) || extractFullText(msg?.["content"]));
+    } else if (payload?.["type"] === "user_message" && typeof payload["message"] === "string") {
+      role = "user";
+      text = stripPromptTags(payload["message"]);
+    } else if (roleRaw === "assistant" || roleRaw === "PLANNER_RESPONSE") {
+      role = "assistant";
+      text = extractFullText(obj["content"]) || extractFullText(msg?.["content"]);
+    }
+
+    if (role && text) {
+      if (role === "user") {
+        promptCount += 1;
+        if (!title) title = text.slice(0, 96);
+      }
+      messages.push({
+        role,
+        ...(timestamp ? { timestamp } : {}),
+        ...(msgModel ? { model: msgModel } : {}),
+        ...(stepTokens > 0 ? { tokens: stepTokens } : {}),
+        content: text.slice(0, 4000),
+      });
+    }
+  }
+
+  const baseId = path.basename(transcriptPath, ".jsonl");
+  if (!sessionId) {
+    sessionId =
+      harnessId === "antigravity" && baseId === "transcript"
+        ? path.basename(path.dirname(path.dirname(path.dirname(transcriptPath))))
+        : baseId;
+  }
+
+  return {
+    id: sessionId,
+    harnessId,
+    title: title ?? (projectFolder ? path.basename(projectFolder) : sessionId),
+    ...(projectFolder ? { projectFolder } : {}),
+    transcriptPath,
+    updatedAt: st ? new Date(st.mtimeMs).toISOString() : new Date().toISOString(),
+    ...(model ? { model } : {}),
+    promptCount,
+    totalTokens,
+    estimatedCostUsd: Math.round(totalCost * 10000) / 10000,
+    messages: messages.slice(-120),
+  };
 }
 
 function estimateCostUsd(model: string, input: number, output: number, cacheRead: number): number {
