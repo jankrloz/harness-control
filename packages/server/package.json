@@ -1,0 +1,30 @@
+{
+  "name": "@harness-control/server",
+  "version": "0.1.0",
+  "private": true,
+  "bin": {
+    "harness-controld": "./dist/daemon.js"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "vpx src/daemon.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@harness-control/core": "workspace:*",
+    "@hono/node-server": "2.1.9",
+    "hono": "4.13.19",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "typescript": "7.0.2"
+  }
+}

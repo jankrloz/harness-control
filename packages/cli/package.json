@@ -1,0 +1,25 @@
+{
+  "name": "@harness-control/cli",
+  "version": "0.1.0",
+  "private": true,
+  "bin": {
+    "harness-control": "./dist/bin.js"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@harness-control/core": "workspace:*",
+    "@harness-control/server": "workspace:*",
+    "@termuijs/core": "0.1.7",
+    "@termuijs/jsx": "0.1.7",
+    "@termuijs/widgets": "0.1.7",
+    "commander": "15.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "typescript": "7.0.2"
+  }
+}

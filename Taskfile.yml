@@ -1,0 +1,127 @@
+version: "3"
+
+vars:
+  NODE_ENV: '{{.NODE_ENV | default "development"}}'
+  CLI_BIN: packages/cli/dist/bin.js
+
+tasks:
+  install:
+    desc: Install workspace dependencies
+    cmds:
+      - pnpm install
+
+  fmt:
+    desc: Format all files with Vite+ (oxfmt)
+    cmds:
+      - vp fmt
+
+  lint:
+    desc: Lint all files with Vite+ (oxlint)
+    cmds:
+      - vp lint
+
+  check:
+    desc: Run format, lint, and type checks
+    cmds:
+      - vp check
+      - pnpm -r typecheck
+
+  check:desktop:
+    desc: Run cargo check on Tauri v2 desktop app
+    cmds:
+      - cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+  test:
+    desc: Run all test suites
+    cmds:
+      - vp test run
+
+  test:unit:
+    desc: Run unit tests
+    cmds:
+      - vp test run --project unit
+
+  test:integration:
+    desc: Run integration tests
+    cmds:
+      - vp test run --project integration
+
+  build:
+    desc: Build core, server, cli, and web packages
+    cmds:
+      - pnpm -r --filter "!@harness-control/desktop" build
+
+  build:desktop:
+    desc: Build macOS Tauri v2 desktop bundle (.app / .dmg)
+    cmds:
+      - pnpm --filter @harness-control/desktop build
+
+  daemon:stop:
+    desc: Stop background harness-control daemon if running
+    cmds:
+      - |
+        PID=$(lsof -ti tcp:4318 2>/dev/null || true)
+        if [ -n "$PID" ]; then /bin/kill $PID && echo "Stopped daemon (pid $PID)"; else echo "No daemon running on :4318"; fi
+
+  dev:server:
+    desc: Start local harness-control daemon in foreground (replaces any background daemon)
+    deps: [daemon:stop]
+    cmds:
+      - pnpm --filter @harness-control/server dev
+
+  dev:web:
+    desc: Start web dashboard dev server
+    cmds:
+      - pnpm --filter @harness-control/web dev
+
+  dev:desktop:
+    desc: Start Tauri v2 desktop app in dev mode
+    cmds:
+      - pnpm --filter @harness-control/desktop dev
+
+  tui:
+    desc: Launch interactive TermUI dashboard
+    interactive: true
+    deps: [build]
+    cmds:
+      - node {{.CLI_BIN}} tui
+
+  list:
+    desc: List discovered skills across harnesses and projects
+    deps: [build]
+    cmds:
+      - node {{.CLI_BIN}} list {{.CLI_ARGS}}
+
+  tokens:
+    desc: Show multi-level token usage
+    deps: [build]
+    cmds:
+      - node {{.CLI_BIN}} tokens {{.CLI_ARGS}}
+
+  sources:
+    desc: List skills grouped by source (installed, available, deprecated)
+    deps: [build]
+    cmds:
+      - node {{.CLI_BIN}} sources {{.CLI_ARGS}}
+
+  cli:
+    desc: Run any harness-control CLI command (e.g. task cli -- --help)
+    deps: [build]
+    cmds:
+      - node {{.CLI_BIN}} {{.CLI_ARGS}}
+
+  link:
+    desc: Link harness-control CLI globally
+    deps: [build]
+    cmds:
+      - pnpm --filter @harness-control/cli link --global
+
+  up:
+    desc: Start containerized dev stack
+    cmds:
+      - docker compose up --build -d
+
+  down:
+    desc: Stop containerized dev stack
+    cmds:
+      - docker compose down

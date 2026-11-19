@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>harness-control — Unified AI Coding Harness Control Plane</title>
+    <link rel="icon" type="image/svg+xml" href="../apps/web/public/favicon.svg" />
+    <style>
+      :root {
+        --bg: #07061a;
+        --surface: #0e0c26;
+        --border: #2a2550;
+        --text: #ece6da;
+        --muted: #9f98c4;
+        --accent: #3f00ff;
+        --accent-text: #a48bff;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+        line-height: 1.6;
+      }
+      .wrap {
+        max-width: 1080px;
+        margin: 0 auto;
+        padding: 36px 24px 72px;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding-bottom: 24px;
+        border-bottom: 1px solid var(--border);
+      }
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+        font-weight: 700;
+        font-size: 18px;
+      }
+      nav {
+        display: flex;
+        gap: 20px;
+      }
+      a {
+        color: var(--accent-text);
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
+      .hero {
+        padding: 48px 0 32px;
+        display: grid;
+        gap: 18px;
+      }
+      .hero img {
+        width: 100%;
+        border-radius: 12px;
+        border: 1px solid var(--border);
+      }
+      h1 {
+        margin: 0;
+        font-size: clamp(28px, 4vw, 42px);
+        letter-spacing: -0.02em;
+      }
+      .lead {
+        color: var(--muted);
+        font-size: 17px;
+        max-width: 760px;
+        margin: 0;
+      }
+      .cta-row {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 18px;
+        border-radius: 8px;
+        font-weight: 600;
+        font-size: 14px;
+        border: 1px solid var(--border);
+        background: var(--surface);
+        color: var(--text);
+      }
+      .btn.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #ece6da;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 16px;
+        margin: 28px 0;
+      }
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 18px;
+      }
+      .card h3 {
+        margin: 0 0 8px;
+        font-size: 15px;
+      }
+      .card p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 13.5px;
+      }
+      .shots {
+        display: grid;
+        gap: 20px;
+        margin-top: 28px;
+      }
+      .shots img {
+        width: 100%;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+      }
+      pre {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 14px 16px;
+        overflow-x: auto;
+        font-size: 13px;
+      }
+      h2 {
+        margin: 40px 0 12px;
+        font-size: 22px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <div class="brand">
+          <img src="../assets/brand/logo.svg" alt="harness-control logo" width="28" height="28" />
+          <span>harness-control</span>
+        </div>
+        <nav>
+          <a href="#features">Features</a>
+          <a href="#screenshots">Screenshots</a>
+          <a href="#cli">CLI &amp; TUI</a>
+          <a href="https://github.com/jankrloz/harness-control">GitHub</a>
+        </nav>
+      </header>
+
+      <section class="hero">
+        <h1>Unified AI Coding Harness Control Plane</h1>
+        <p class="lead">
+          Audit installed skills across 18 AI coding harnesses, measure global and project token
+          budgets, detect drift and duplicates, and resolve conflicts safely through package manager
+          CLIs.
+        </p>
+        <div class="cta-row">
+          <a class="btn primary" href="https://github.com/jankrloz/harness-control"
+            >View on GitHub</a
+          >
+          <a class="btn" href="https://github.com/jankrloz/harness-control/releases"
+            >Download Desktop (macOS / Linux / Windows)</a
+          >
+        </div>
+        <img src="../assets/brand/cover.png" alt="harness-control cover" />
+      </section>
+
+      <h2 id="features">Core Capabilities</h2>
+      <div class="grid">
+        <div class="card">
+          <h3>Multi-Harness &amp; Profile Inventory</h3>
+          <p>
+            Scans Claude Code (~/.claude &amp; ~/.claude-* profiles), Codex, Gemini CLI,
+            Antigravity, OpenCode, Cursor, Windsurf, Kiro, and workspaces.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Global &amp; Project Token Usage</h3>
+          <p>
+            Exact tiktoken counts (description, frontmatter, body, full) plus heaviest projects and
+            session transcript activation tracking.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Drift &amp; Duplicate Resolution</h3>
+          <p>
+            Flags global+project overlap, content divergence, relative age (older/newer/same),
+            multi-manager conflicts, and cross-skill duplicates.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Manager-Only Execution</h3>
+          <p>
+            Delegates remove, upgrade, install, and migrate-to-apm strictly to apm, npx skills,
+            claude plugin, and gemini extensions with dry-run previews.
+          </p>
+        </div>
+      </div>
+
+      <h2 id="screenshots">Screenshots</h2>
+      <div class="shots">
+        <img src="screenshots/web-home.png" alt="Home overview" />
+        <img src="screenshots/web-cleanup.png" alt="Cleanup planner" />
+      </div>
+
+      <h2 id="cli">CLI &amp; TUI</h2>
+      <pre><code># Launch interactive 7-module TermUI TUI
+harness-control
+
+# Preview cleanup queue &amp; expected token savings
+harness-control cleanup --only duplicates,unused
+
+# Inspect global vs project token usage
+harness-control tokens</code></pre>
+    </div>
+  </body>
+</html>

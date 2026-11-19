@@ -1,0 +1,7 @@
+node_modules
+dist
+build
+.git
+.agents
+coverage
+apps/desktop/src-tauri/target

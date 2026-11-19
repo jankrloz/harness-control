@@ -1,0 +1,547 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import type {
+  HarnessId,
+  McpServerEntry,
+  PrimitiveEntry,
+  PrimitivesSnapshot,
+  SessionSummary,
+  UsageDashboardSnapshot,
+  UsageHourlyBucket,
+  UsageModelBreakdown,
+  UsageRequestLog,
+} from "../domain/index.js";
+import { discoverClaudeConfigDirs } from "./harness-registry.js";
+
+async function readJsonSafe(filePath: string): Promise<Record<string, unknown> | null> {
+  try {
+    const raw = await fs.readFile(filePath, "utf8");
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function listFilesSafe(dir: string): Promise<string[]> {
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    return entries.filter((e) => e.isFile()).map((e) => path.join(dir, e.name));
+  } catch {
+    return [];
+  }
+}
+
+async function collectFilesRecursive(
+  dir: string,
+  maxDepth: number,
+  ext: string,
+): Promise<Array<{ file: string; mtimeMs: number }>> {
+  const out: Array<{ file: string; mtimeMs: number }> = [];
+  const walk = async (cur: string, depth: number) => {
+    if (depth > maxDepth) return;
+    let entries;
+    try {
+      entries = await fs.readdir(cur, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const full = path.join(cur, e.name);
+      if (e.isDirectory()) {
+        await walk(full, depth + 1);
+      } else if (e.isFile() && e.name.endsWith(ext)) {
+        try {
+          const st = await fs.stat(full);
+          out.push({ file: full, mtimeMs: st.mtimeMs });
+        } catch {
+          // Ignore unreadable
+        }
+      }
+    }
+  };
+  await walk(dir, 0);
+  return out;
+}
+
+function addMcpMap(
+  map: Map<
+    string,
+    {
+      name: string;
+      commandOrUrl: string;
+      transport: "stdio" | "http" | "sse";
+      harnesses: Set<HarnessId>;
+      configPaths: Set<string>;
+    }
+  >,
+  serversObj: unknown,
+  harnessId: HarnessId,
+  configPath: string,
+) {
+  if (!serversObj || typeof serversObj !== "object" || Array.isArray(serversObj)) return;
+  for (const [name, rawCfg] of Object.entries(serversObj as Record<string, unknown>)) {
+    if (!rawCfg || typeof rawCfg !== "object") continue;
+    const cfg = rawCfg as Record<string, unknown>;
+    const url =
+      typeof cfg["url"] === "string"
+        ? cfg["url"]
+        : typeof cfg["serverUrl"] === "string"
+          ? cfg["serverUrl"]
+          : undefined;
+    const cmd = typeof cfg["command"] === "string" ? cfg["command"] : undefined;
+    const args = Array.isArray(cfg["args"])
+      ? cfg["args"].filter((a): a is string => typeof a === "string").join(" ")
+      : "";
+    const commandOrUrl = url ?? (cmd ? `${cmd}${args ? ` ${args}` : ""}` : "configured");
+    const transport: "stdio" | "http" | "sse" = url
+      ? url.includes("sse")
+        ? "sse"
+        : "http"
+      : "stdio";
+
+    const existing = map.get(name);
+    if (existing) {
+      existing.harnesses.add(harnessId);
+      existing.configPaths.add(configPath);
+    } else {
+      map.set(name, {
+        name,
+        commandOrUrl,
+        transport,
+        harnesses: new Set([harnessId]),
+        configPaths: new Set([configPath]),
+      });
+    }
+  }
+}
+
+export async function scanPrimitives(homeOverride?: string): Promise<PrimitivesSnapshot> {
+  const home = homeOverride ?? os.homedir();
+  const mcpMap = new Map<
+    string,
+    {
+      name: string;
+      commandOrUrl: string;
+      transport: "stdio" | "http" | "sse";
+      harnesses: Set<HarnessId>;
+      configPaths: Set<string>;
+    }
+  >();
+
+  const claudeDirs = discoverClaudeConfigDirs(home);
+  const jsonMcpSources: Array<{ file: string; harness: HarnessId; keys: string[] }> = [
+    { file: path.join(home, ".claude.json"), harness: "claude", keys: ["mcpServers"] },
+    ...claudeDirs.map((d) => ({
+      file: path.join(d, "settings.json"),
+      harness: "claude" as HarnessId,
+      keys: ["mcpServers"],
+    })),
+    { file: path.join(home, ".gemini", "settings.json"), harness: "gemini", keys: ["mcpServers"] },
+    {
+      file: path.join(home, ".gemini", "antigravity", "mcp_config.json"),
+      harness: "antigravity",
+      keys: ["mcpServers"],
+    },
+    {
+      file: path.join(home, ".config", "opencode", "opencode.json"),
+      harness: "opencode",
+      keys: ["mcp", "mcpServers"],
+    },
+    { file: path.join(home, ".cursor", "mcp.json"), harness: "cursor", keys: ["mcpServers"] },
+  ];
+
+  await Promise.all(
+    jsonMcpSources.map(async (src) => {
+      const data = await readJsonSafe(src.file);
+      if (!data) return;
+      for (const key of src.keys) {
+        addMcpMap(mcpMap, data[key], src.harness, src.file);
+      }
+    }),
+  );
+
+  // Parse Codex TOML [mcp_servers.<name>]
+  const codexTomlPath = path.join(home, ".codex", "config.toml");
+  try {
+    const rawToml = await fs.readFile(codexTomlPath, "utf8");
+    const matches = rawToml.matchAll(/^\[mcp_servers\.([^\]]+)\]/gm);
+    for (const m of matches) {
+      const name = m[1]?.trim();
+      if (!name) continue;
+      addMcpMap(mcpMap, { [name]: { command: "codex-toml" } }, "codex", codexTomlPath);
+    }
+  } catch {
+    // No codex config.toml
+  }
+
+  const mcpServers: McpServerEntry[] = Array.from(mcpMap.values())
+    .map((m) => ({
+      name: m.name,
+      commandOrUrl: m.commandOrUrl,
+      transport: m.transport,
+      harnesses: Array.from(m.harnesses).sort(),
+      configPaths: Array.from(m.configPaths),
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  // Commands & Prompts
+  const commands: PrimitiveEntry[] = [];
+  const prompts: PrimitiveEntry[] = [];
+  const hooks: PrimitiveEntry[] = [];
+  const lsps: PrimitiveEntry[] = [];
+
+  const cmdDirs: Array<{ dir: string; harness: HarnessId; kind: "command" | "prompt" }> = [
+    ...claudeDirs.map((d) => ({
+      dir: path.join(d, "commands"),
+      harness: "claude" as HarnessId,
+      kind: "command" as const,
+    })),
+    { dir: path.join(home, ".gemini", "commands"), harness: "gemini", kind: "command" },
+    { dir: path.join(home, ".codex", "prompts"), harness: "codex", kind: "prompt" },
+    { dir: path.join(home, ".claude", "prompts"), harness: "claude", kind: "prompt" },
+  ];
+
+  for (const cd of cmdDirs) {
+    const files = await listFilesSafe(cd.dir);
+    for (const file of files) {
+      const entry: PrimitiveEntry = {
+        id: `${cd.harness}:${cd.kind}:${path.basename(file)}`,
+        kind: cd.kind,
+        name: path.basename(file).replace(/\.(md|toml)$/i, ""),
+        harnessId: cd.harness,
+        path: file,
+      };
+      if (cd.kind === "command") commands.push(entry);
+      else prompts.push(entry);
+    }
+  }
+
+  // Hooks from Claude settings.json
+  for (const d of claudeDirs) {
+    const settingsPath = path.join(d, "settings.json");
+    const data = await readJsonSafe(settingsPath);
+    const rawHooks = data?.["hooks"];
+    if (rawHooks && typeof rawHooks === "object" && !Array.isArray(rawHooks)) {
+      for (const [hookEvent, list] of Object.entries(rawHooks as Record<string, unknown>)) {
+        hooks.push({
+          id: `claude:hook:${hookEvent}:${settingsPath}`,
+          kind: "hook",
+          name: hookEvent,
+          harnessId: "claude",
+          path: settingsPath,
+          detail: Array.isArray(list) ? `${list.length} matcher(s)` : "configured",
+        });
+      }
+    }
+  }
+
+  // LSPs from opencode.json
+  const openCodePath = path.join(home, ".config", "opencode", "opencode.json");
+  const openCodeData = await readJsonSafe(openCodePath);
+  const rawLsp = openCodeData?.["lsp"];
+  if (rawLsp && typeof rawLsp === "object" && !Array.isArray(rawLsp)) {
+    for (const [lang, cfg] of Object.entries(rawLsp as Record<string, unknown>)) {
+      lsps.push({
+        id: `opencode:lsp:${lang}`,
+        kind: "lsp",
+        name: lang,
+        harnessId: "opencode",
+        path: openCodePath,
+        detail: cfg && typeof cfg === "object" ? "configured" : String(cfg),
+      });
+    }
+  }
+
+  return {
+    scannedAt: new Date().toISOString(),
+    mcpServers,
+    commands: commands.sort((a, b) => a.name.localeCompare(b.name)),
+    prompts: prompts.sort((a, b) => a.name.localeCompare(b.name)),
+    hooks: hooks.sort((a, b) => a.name.localeCompare(b.name)),
+    lsps: lsps.sort((a, b) => a.name.localeCompare(b.name)),
+  };
+}
+
+async function readHead(filePath: string, maxBytes = 8192): Promise<string> {
+  try {
+    const fh = await fs.open(filePath, "r");
+    try {
+      const buf = Buffer.alloc(maxBytes);
+      const { bytesRead } = await fh.read(buf, 0, maxBytes, 0);
+      return buf.subarray(0, bytesRead).toString("utf8");
+    } finally {
+      await fh.close();
+    }
+  } catch {
+    return "";
+  }
+}
+
+function extractTextSnippet(rawContent: unknown): string | undefined {
+  if (typeof rawContent === "string") {
+    const trimmed = rawContent.replace(/\s+/g, " ").trim();
+    return trimmed ? trimmed.slice(0, 96) : undefined;
+  }
+  if (Array.isArray(rawContent)) {
+    for (const block of rawContent) {
+      if (block && typeof block === "object") {
+        const text = (block as Record<string, unknown>)["text"];
+        if (typeof text === "string" && text.trim()) {
+          return text.replace(/\s+/g, " ").trim().slice(0, 96);
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+export async function scanSessions(homeOverride?: string, limit = 200): Promise<SessionSummary[]> {
+  const home = homeOverride ?? os.homedir();
+  const roots: Array<{ dir: string; harness: HarnessId; depth: number }> = [
+    ...discoverClaudeConfigDirs(home).map((d) => ({
+      dir: path.join(d, "projects"),
+      harness: "claude" as HarnessId,
+      depth: 2,
+    })),
+    { dir: path.join(home, ".codex", "sessions"), harness: "codex", depth: 4 },
+    { dir: path.join(home, ".gemini", "antigravity", "brain"), harness: "antigravity", depth: 3 },
+  ];
+
+  const allFiles: Array<{ file: string; mtimeMs: number; harness: HarnessId }> = [];
+  for (const r of roots) {
+    const found = await collectFilesRecursive(r.dir, r.depth, ".jsonl");
+    for (const item of found) {
+      allFiles.push({ ...item, harness: r.harness });
+    }
+  }
+
+  allFiles.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const topFiles = allFiles.slice(0, limit);
+
+  const sessions: SessionSummary[] = [];
+  for (const item of topFiles) {
+    const head = await readHead(item.file, 16384);
+    const lines = head.split(/\r?\n/).filter((l) => l.trim().length > 0);
+    let title: string | undefined;
+    let projectFolder: string | undefined;
+    let model: string | undefined;
+
+    for (const line of lines.slice(0, 20)) {
+      try {
+        const obj = JSON.parse(line) as Record<string, unknown>;
+        if (!projectFolder && typeof obj["cwd"] === "string") {
+          projectFolder = obj["cwd"];
+        }
+        if (!model && typeof obj["model"] === "string") {
+          model = obj["model"];
+        }
+        const msg = obj["message"] as Record<string, unknown> | undefined;
+        if (!model && msg && typeof msg["model"] === "string") {
+          model = msg["model"];
+        }
+        if (!title) {
+          const role = obj["role"] ?? obj["type"] ?? msg?.["role"];
+          if (role === "user" || role === "USER_INPUT") {
+            const candidate =
+              extractTextSnippet(obj["content"]) ?? extractTextSnippet(msg?.["content"]);
+            if (candidate && !candidate.startsWith("<")) {
+              title = candidate;
+            }
+          }
+        }
+      } catch {
+        // Ignore partial line
+      }
+    }
+
+    const baseId = path.basename(item.file, ".jsonl");
+    const parentName = path.basename(path.dirname(item.file));
+    if (!projectFolder && item.harness === "claude" && parentName.startsWith("-")) {
+      projectFolder = parentName.replace(/-/g, "/");
+    }
+
+    sessions.push({
+      id: `${item.harness}:${baseId}`,
+      harnessId: item.harness,
+      title: title ?? (projectFolder ? path.basename(projectFolder) : baseId),
+      ...(projectFolder ? { projectFolder } : {}),
+      updatedAt: new Date(item.mtimeMs).toISOString(),
+      messageCount: lines.length,
+      ...(model ? { model } : {}),
+      transcriptPath: item.file,
+    });
+  }
+
+  return sessions;
+}
+
+function estimateCostUsd(model: string, input: number, output: number, cacheRead: number): number {
+  const m = model.toLowerCase();
+  const inRate = m.includes("opus") ? 15 / 1e6 : m.includes("haiku") ? 0.8 / 1e6 : 3 / 1e6;
+  const outRate = m.includes("opus") ? 75 / 1e6 : m.includes("haiku") ? 4 / 1e6 : 15 / 1e6;
+  const cacheRate = inRate * 0.1;
+  return input * inRate + output * outRate + cacheRead * cacheRate;
+}
+
+export async function scanUsageMetrics(homeOverride?: string): Promise<UsageDashboardSnapshot> {
+  const home = homeOverride ?? os.homedir();
+  const roots: Array<{ dir: string; harness: HarnessId; depth: number }> = [
+    ...discoverClaudeConfigDirs(home).map((d) => ({
+      dir: path.join(d, "projects"),
+      harness: "claude" as HarnessId,
+      depth: 2,
+    })),
+    { dir: path.join(home, ".codex", "sessions"), harness: "codex", depth: 4 },
+  ];
+
+  const allFiles: Array<{ file: string; mtimeMs: number; harness: HarnessId }> = [];
+  for (const r of roots) {
+    const found = await collectFilesRecursive(r.dir, r.depth, ".jsonl");
+    for (const item of found) {
+      allFiles.push({ ...item, harness: r.harness });
+    }
+  }
+
+  allFiles.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const recentFiles = allFiles.slice(0, 60);
+
+  const byModelMap = new Map<
+    string,
+    {
+      model: string;
+      requests: number;
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens: number;
+      estimatedCostUsd: number;
+    }
+  >();
+  const hourlyMap = new Map<string, { tokens: number; requests: number }>();
+  for (let h = 0; h < 24; h++) {
+    hourlyMap.set(`${String(h).padStart(2, "0")}:00`, { tokens: 0, requests: 0 });
+  }
+
+  const recentRequests: UsageRequestLog[] = [];
+  let totalRequests = 0;
+  let totalInput = 0;
+  let totalOutput = 0;
+  let totalCacheRead = 0;
+  let totalCost = 0;
+
+  for (const item of recentFiles) {
+    let raw: string;
+    try {
+      raw = await fs.readFile(item.file, "utf8");
+    } catch {
+      continue;
+    }
+
+    for (const line of raw.split(/\r?\n/)) {
+      if (!line.includes("usage")) continue;
+      let obj: Record<string, unknown>;
+      try {
+        obj = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+
+      const msg = obj["message"] as Record<string, unknown> | undefined;
+      const usage = (msg?.["usage"] ?? obj["usage"]) as Record<string, unknown> | undefined;
+      if (!usage || typeof usage !== "object") continue;
+
+      const inputTokens = Number(usage["input_tokens"] ?? 0);
+      const outputTokens = Number(usage["output_tokens"] ?? 0);
+      const cacheReadTokens = Number(
+        usage["cache_read_input_tokens"] ?? usage["cached_input_tokens"] ?? 0,
+      );
+      if (inputTokens + outputTokens + cacheReadTokens === 0) continue;
+
+      const model =
+        (typeof msg?.["model"] === "string" ? msg["model"] : undefined) ??
+        (typeof obj["model"] === "string" ? obj["model"] : undefined) ??
+        `${item.harness}-default`;
+
+      const timestamp =
+        typeof obj["timestamp"] === "string"
+          ? obj["timestamp"]
+          : new Date(item.mtimeMs).toISOString();
+      const cost = estimateCostUsd(model, inputTokens, outputTokens, cacheReadTokens);
+
+      totalRequests += 1;
+      totalInput += inputTokens;
+      totalOutput += outputTokens;
+      totalCacheRead += cacheReadTokens;
+      totalCost += cost;
+
+      const m = byModelMap.get(model) ?? {
+        model,
+        requests: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        estimatedCostUsd: 0,
+      };
+      m.requests += 1;
+      m.inputTokens += inputTokens;
+      m.outputTokens += outputTokens;
+      m.cacheReadTokens += cacheReadTokens;
+      m.estimatedCostUsd += cost;
+      byModelMap.set(model, m);
+
+      const dt = new Date(timestamp);
+      if (!Number.isNaN(dt.getTime())) {
+        const hourKey = `${String(dt.getHours()).padStart(2, "0")}:00`;
+        const hb = hourlyMap.get(hourKey);
+        if (hb) {
+          hb.tokens += inputTokens + outputTokens + cacheReadTokens;
+          hb.requests += 1;
+        }
+      }
+
+      if (recentRequests.length < 100) {
+        recentRequests.push({
+          timestamp,
+          harnessId: item.harness,
+          model,
+          inputTokens,
+          outputTokens,
+          cacheReadTokens,
+          estimatedCostUsd: cost,
+        });
+      }
+    }
+  }
+
+  const totalTokensProcessed = totalInput + totalOutput + totalCacheRead;
+  const cacheHitRatePct =
+    totalInput + totalCacheRead > 0
+      ? Math.round((totalCacheRead / (totalInput + totalCacheRead)) * 1000) / 10
+      : 0;
+
+  const hourly: UsageHourlyBucket[] = Array.from(hourlyMap.entries()).map(([hour, v]) => ({
+    hour,
+    tokens: v.tokens,
+    requests: v.requests,
+  }));
+
+  const byModel: UsageModelBreakdown[] = Array.from(byModelMap.values()).sort(
+    (a, b) => b.estimatedCostUsd - a.estimatedCostUsd,
+  );
+
+  recentRequests.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+
+  return {
+    scannedAt: new Date().toISOString(),
+    totalRequests,
+    totalTokensProcessed,
+    cacheHitRatePct,
+    estimatedCostUsd: Math.round(totalCost * 100) / 100,
+    hourly,
+    byModel,
+    recentRequests: recentRequests.slice(0, 60),
+  };
+}
