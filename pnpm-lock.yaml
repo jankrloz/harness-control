@@ -214,6 +214,9 @@ importers:
       '@radix-ui/react-tabs':
         specifier: 1.2.1
         version: 1.2.1(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      '@thesvg/react':
+        specifier: 4.0.12
+        version: 4.0.12(react@19.3.1)
       class-variance-authority:
         specifier: 0.7.1
         version: 0.7.1
@@ -1283,6 +1286,12 @@ packages:
     engines: {node: '>=12', npm: '>=6'}
     peerDependencies:
       '@testing-library/dom': '>=7.21.4'
+
+  '@thesvg/react@4.0.12':
+    resolution: {integrity: sha512-grZNsAZtjnUEJWqys0/rQeAZZHnd5r81YXuGw+vdbKThRdma6uZ6or2shLhaLyYb066No4JYS82RcehM4mh/zg==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      react: '>=18'
 
   '@tsrs/darwin-arm64@7.1.0-beta.tsrs2':
     resolution: {integrity: sha512-VMsXBPFD0SO5p7XrXhLutPmnpHc4kMIt7uztBJoHr/5Jd6qC8eH/TomobdPGugw27U3uiW2wJDqYjqYq5fxoCA==}
@@ -3344,6 +3353,10 @@ snapshots:
   '@testing-library/user-event@14.6.12(@testing-library/dom@10.4.2)':
     dependencies:
       '@testing-library/dom': 10.4.2
+
+  '@thesvg/react@4.0.12(react@19.3.1)':
+    dependencies:
+      react: 19.3.1
 
   '@tsrs/darwin-arm64@7.1.0-beta.tsrs2':
     optional: true
