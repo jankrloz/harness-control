@@ -323,6 +323,7 @@ export class ActionService {
     const commands: PlannedCommand[] = [];
     const pathChanges: PlannedPathChange[] = [];
     const warnings: string[] = [];
+    const seenCommands = new Set<string>();
 
     for (const skill of targets) {
       if (skill.provenance.owningManager === "apm") {
@@ -330,25 +331,42 @@ export class ActionService {
         continue;
       }
       const source = skill.provenance.sourceRepo ?? skill.provenance.managedId ?? skill.name;
-      commands.push({
-        command: "apm",
-        args: ["install", source],
-        description: `Declare and install '${source}' via APM`,
-      });
-      if (req.cleanupLegacyLockfiles && skill.provenance.owningManager === "npx-skills") {
+      const hasGlobal = skill.exposures.some((e) => e.scope === "global");
+      const projectRoots = Array.from(new Set(skill.projectPaths));
+
+      if (hasGlobal || projectRoots.length === 0) {
         commands.push({
-          command: "npx",
-          args: ["skills", "remove", skill.provenance.managedId ?? skill.name, "-y"],
-          description: `Clean up legacy npx skills entry for '${skill.name}'`,
+          command: "apm",
+          args: ["install", source, "-g"],
+          description: `Install '${source}' globally via APM`,
         });
       }
-      if (
-        skill.provenance.owningManager === "git-clone" ||
-        skill.provenance.owningManager === "manual"
-      ) {
-        warnings.push(
-          `'${skill.name}' has legacy ${skill.provenance.owningManager} exposure(s); direct file deletion (rm) is disabled, clean up manually if desired.`,
-        );
+      for (const projectRoot of projectRoots) {
+        commands.push({
+          command: "apm",
+          args: ["install", source],
+          cwd: projectRoot,
+          description: `Install '${source}' in ${projectRoot} via APM`,
+        });
+      }
+
+      if (req.cleanupLegacyLockfiles) {
+        if (
+          skill.provenance.owningManager === "git-clone" ||
+          skill.provenance.owningManager === "manual"
+        ) {
+          warnings.push(
+            `'${skill.name}' has legacy ${skill.provenance.owningManager} exposure(s); direct file deletion (rm) is disabled, clean up manually if desired.`,
+          );
+        } else {
+          this.appendRemoveCommandsForSkill(
+            skill,
+            { skillId: skill.id, targetScope: "all" },
+            commands,
+            warnings,
+            seenCommands,
+          );
+        }
       }
     }
 

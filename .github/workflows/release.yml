@@ -2,14 +2,31 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
+  workflow_dispatch:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
+  release:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
   build-desktop:
+    needs: release
+    if: needs.release.outputs.release_created == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -23,6 +40,8 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.tag_name }}
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -43,9 +62,90 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: apps/desktop
-          tagName: v__VERSION__
-          releaseName: "harness-control v__VERSION__"
-          releaseBody: "Cross-platform desktop builds for macOS, Linux, and Windows."
-          releaseDraft: true
+          tagName: ${{ needs.release.outputs.tag_name }}
+          releaseName: "harness-control ${{ needs.release.outputs.tag_name }}"
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
+
+  update-homebrew:
+    needs: [release, build-desktop]
+    if: needs.release.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    env:
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - name: Skip if HOMEBREW_TAP_TOKEN is not configured
+        id: check
+        run: |
+          if [ -z "$HOMEBREW_TAP_TOKEN" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "HOMEBREW_TAP_TOKEN secret is not set; skipping Homebrew tap update."
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.check.outputs.enabled == 'true'
+        with:
+          repository: jankrloz/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+      - name: Update Formula and Cask
+        if: steps.check.outputs.enabled == 'true'
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+          TAG: ${{ needs.release.outputs.tag_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p homebrew-tap/Formula homebrew-tap/Casks
+          SRC_URL="https://github.com/jankrloz/harness-control/archive/refs/tags/${TAG}.tar.gz"
+          SRC_SHA=$(curl -fsSL "$SRC_URL" | sha256sum | awk '{print $1}')
+
+          cat > homebrew-tap/Formula/harness-control.rb <<EOF
+          class HarnessControl < Formula
+            desc "Unified AI coding harness control plane (CLI, TUI, daemon)"
+            homepage "https://github.com/jankrloz/harness-control"
+            url "${SRC_URL}"
+            sha256 "${SRC_SHA}"
+            license "MIT"
+
+            depends_on "node@22"
+            depends_on "pnpm"
+
+            def install
+              system "pnpm", "install", "--frozen-lockfile"
+              system "pnpm", "-r", "--filter", "!@harness-control/desktop", "build"
+              libexec.install Dir["*"]
+              (bin/"harness-control").write_env_script libexec/"packages/cli/dist/bin.js", PATH: "#{Formula["node@22"].opt_bin}:$PATH"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/harness-control --version")
+            end
+          end
+          EOF
+
+          DMG_URL=$(gh release view "$TAG" --repo jankrloz/harness-control --json assets --jq '.assets[] | select(.name | endswith(".dmg")) | .url' | head -n 1)
+          if [ -n "$DMG_URL" ]; then
+            DMG_SHA=$(curl -fsSL "$DMG_URL" | sha256sum | awk '{print $1}')
+            cat > homebrew-tap/Casks/harness-control.rb <<EOF
+          cask "harness-control" do
+            version "${VERSION}"
+            sha256 "${DMG_SHA}"
+
+            url "${DMG_URL}"
+            name "harness-control"
+            desc "Unified AI coding harness control plane desktop app"
+            homepage "https://github.com/jankrloz/harness-control"
+
+            app "harness-control.app"
+          end
+          EOF
+          fi
+
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/harness-control.rb Casks/harness-control.rb
+          git commit -m "chore(release): update harness-control to ${TAG}" || exit 0
+          git push

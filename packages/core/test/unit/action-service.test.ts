@@ -106,7 +106,7 @@ describe("ActionService", () => {
     expect(preview.warnings[0]).toContain("direct git pull is disabled");
   });
 
-  it("builds migrate-to-apm preview with legacy cleanup", () => {
+  it("builds migrate-to-apm preview with global + project install and legacy removal", () => {
     const executor = makeExecutor();
     const service = new ActionService(executor);
 
@@ -114,6 +114,18 @@ describe("ActionService", () => {
       ...apmSkill,
       id: "acme/npx-one",
       name: "npx-one",
+      exposures: [
+        ...apmSkill.exposures,
+        {
+          harnessId: "claude",
+          scope: "project",
+          path: "/proj/a/.claude/skills/npx-one",
+          skillFilePath: "/proj/a/.claude/skills/npx-one/SKILL.md",
+          linkType: "symlink-healthy",
+        },
+      ],
+      projectPaths: ["/proj/a"],
+      projectCount: 1,
       provenance: {
         author: "acme",
         sourceRepo: "https://github.com/acme/npx-one",
@@ -128,9 +140,13 @@ describe("ActionService", () => {
       cleanupLegacyLockfiles: true,
     });
 
-    expect(preview.commands.map((c) => `${c.command} ${c.args.join(" ")}`)).toEqual([
-      "apm install https://github.com/acme/npx-one",
-      "npx skills remove npx-one -y",
+    expect(
+      preview.commands.map((c) => `${c.command} ${c.args.join(" ")}${c.cwd ? ` @${c.cwd}` : ""}`),
+    ).toEqual([
+      "apm install https://github.com/acme/npx-one -g",
+      "apm install https://github.com/acme/npx-one @/proj/a",
+      "npx skills remove npx-one -g -y",
+      "npx skills remove npx-one -y @/proj/a",
     ]);
   });
 
