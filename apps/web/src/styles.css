@@ -122,10 +122,20 @@ body {
   font-weight: 600;
 }
 
+html,
+body {
+  max-width: 100%;
+  overflow-x: clip;
+}
+
 .layout {
   display: grid;
-  grid-template-columns: 256px 1fr;
+  grid-template-columns: 256px minmax(0, 1fr);
   min-height: 100vh;
+}
+
+.layout > * {
+  min-width: 0;
 }
 
 .sidebar {
@@ -1302,6 +1312,8 @@ pre {
 .chat-stream {
   display: grid;
   gap: 12px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .chat-turn {
@@ -1311,6 +1323,26 @@ pre {
   background: var(--surface);
   display: grid;
   gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.chat-turn pre,
+.markdown-body pre {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.chat-turn table,
+.markdown-body table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.chat-turn code {
+  overflow-wrap: anywhere;
 }
 
 .chat-turn.user {

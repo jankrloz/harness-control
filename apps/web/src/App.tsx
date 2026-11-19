@@ -396,7 +396,11 @@ export function App() {
   const [selectedSessionDetail, setSelectedSessionDetail] = useState<SessionDetail | null>(null);
   const [sessionDetailLoading, setSessionDetailLoading] = useState(false);
   const [usageMetricsData, setUsageMetricsData] = useState<UsageDashboardSnapshot | null>(null);
-  const [tokensTab, setTokensTab] = useState<"budgets" | "requests">("budgets");
+  const [tokensTab, setTokensTab] = useState<"budgets" | "requests">("requests");
+  const [tokensTimeFilter, setTokensTimeFilter] = useState<"all" | "24h" | "7d" | "30d">("all");
+  const [tokensHarnessFilter, setTokensHarnessFilter] = useState<string>("all");
+  const [tokensModelFilter, setTokensModelFilter] = useState<string>("all");
+  const [tokensSubTab, setTokensSubTab] = useState<"logs" | "models">("logs");
   const [installPreview, setInstallPreview] = useState<DryRunPreview | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
   const [liveAnnouncement, setLiveAnnouncement] = useState("");
@@ -4589,21 +4593,21 @@ export function App() {
                 type="button"
                 role="tab"
                 className="underline-tab"
-                aria-selected={tokensTab === "budgets"}
-                onClick={() => setTokensTab("budgets")}
-              >
-                <Layers size={13} aria-hidden="true" />
-                <span>Skill Token Budgets</span>
-              </button>
-              <button
-                type="button"
-                role="tab"
-                className="underline-tab"
                 aria-selected={tokensTab === "requests"}
                 onClick={() => setTokensTab("requests")}
               >
                 <Cpu size={13} aria-hidden="true" />
                 <span>Request &amp; Model Usage</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                className="underline-tab"
+                aria-selected={tokensTab === "budgets"}
+                onClick={() => setTokensTab("budgets")}
+              >
+                <Layers size={13} aria-hidden="true" />
+                <span>Skill Token Budgets</span>
               </button>
             </div>
 
@@ -4614,51 +4618,192 @@ export function App() {
                   <div className="skeleton-row" />
                 </div>
               ) : (
-                <div style={{ display: "grid", gap: 14, minWidth: 0 }}>
-                  <section className="stats-strip" aria-label="Session request usage summary">
-                    <div className="stat-tile">
-                      <div className="stat-label">Estimated Cost</div>
-                      <div className="stat-value">
-                        ${usageMetricsData.estimatedCostUsd.toFixed(2)}
-                      </div>
-                    </div>
-                    <div className="stat-tile">
-                      <div className="stat-label">Total Requests</div>
-                      <div className="stat-value">
-                        {usageMetricsData.totalRequests.toLocaleString()}
-                      </div>
-                    </div>
-                    <div className="stat-tile">
-                      <div className="stat-label">Tokens Processed</div>
-                      <div className="stat-value">
-                        {usageMetricsData.totalTokensProcessed.toLocaleString()}
-                      </div>
-                    </div>
-                    <div className="stat-tile">
-                      <div className="stat-label">Cache Hit Rate</div>
-                      <div className="stat-value">{usageMetricsData.cacheHitRatePct}%</div>
-                    </div>
-                  </section>
+                (() => {
+                  const now = Date.now();
+                  const cutoffMs =
+                    tokensTimeFilter === "24h"
+                      ? now - 86_400_000
+                      : tokensTimeFilter === "7d"
+                        ? now - 7 * 86_400_000
+                        : tokensTimeFilter === "30d"
+                          ? now - 30 * 86_400_000
+                          : 0;
+                  const availableHarnesses = Array.from(
+                    new Set(usageMetricsData.recentRequests.map((r) => r.harnessId)),
+                  ).sort();
+                  const availableModels = Array.from(
+                    new Set(usageMetricsData.recentRequests.map((r) => r.model)),
+                  ).sort();
 
-                  <section className="panel" style={{ display: "grid", gap: 10 }}>
-                    <h2 style={{ margin: 0 }}>Tokens (Hourly Distribution)</h2>
-                    {(() => {
-                      const maxTokens = Math.max(
-                        1,
-                        ...usageMetricsData.hourly.map((h) => h.tokens),
-                      );
-                      return (
+                  const isFiltered =
+                    tokensTimeFilter !== "all" ||
+                    tokensHarnessFilter !== "all" ||
+                    tokensModelFilter !== "all";
+
+                  const filteredRequests = usageMetricsData.recentRequests.filter((r) => {
+                    if (cutoffMs > 0 && Date.parse(r.timestamp) < cutoffMs) return false;
+                    if (tokensHarnessFilter !== "all" && r.harnessId !== tokensHarnessFilter)
+                      return false;
+                    if (tokensModelFilter !== "all" && r.model !== tokensModelFilter) return false;
+                    return true;
+                  });
+
+                  const totalCost = isFiltered
+                    ? filteredRequests.reduce((sum, r) => sum + r.estimatedCostUsd, 0)
+                    : usageMetricsData.estimatedCostUsd;
+                  const totalReqs = isFiltered
+                    ? filteredRequests.length
+                    : usageMetricsData.totalRequests;
+                  const totalTokens = isFiltered
+                    ? filteredRequests.reduce(
+                        (sum, r) => sum + r.inputTokens + r.outputTokens + r.cacheReadTokens,
+                        0,
+                      )
+                    : usageMetricsData.totalTokensProcessed;
+                  const cacheTotalIn = filteredRequests.reduce(
+                    (sum, r) => sum + r.inputTokens + r.cacheReadTokens,
+                    0,
+                  );
+                  const cacheReads = filteredRequests.reduce(
+                    (sum, r) => sum + r.cacheReadTokens,
+                    0,
+                  );
+                  const cacheHitPct = isFiltered
+                    ? cacheTotalIn > 0
+                      ? Math.round((cacheReads / cacheTotalIn) * 1000) / 10
+                      : 0
+                    : usageMetricsData.cacheHitRatePct;
+
+                  const hourlyBuckets = isFiltered
+                    ? (() => {
+                        const buckets = Array.from({ length: 24 }, (_, h) => ({
+                          hour: `${String(h).padStart(2, "0")}:00`,
+                          tokens: 0,
+                          requests: 0,
+                        }));
+                        for (const r of filteredRequests) {
+                          const d = new Date(r.timestamp);
+                          if (!Number.isNaN(d.getTime())) {
+                            const b = buckets[d.getHours()];
+                            if (b) {
+                              b.tokens += r.inputTokens + r.outputTokens + r.cacheReadTokens;
+                              b.requests += 1;
+                            }
+                          }
+                        }
+                        return buckets;
+                      })()
+                    : usageMetricsData.hourly;
+
+                  const modelRows = isFiltered
+                    ? Array.from(
+                        filteredRequests.reduce((acc, r) => {
+                          const cur = acc.get(r.model) ?? {
+                            model: r.model,
+                            requests: 0,
+                            inputTokens: 0,
+                            outputTokens: 0,
+                            cacheReadTokens: 0,
+                            estimatedCostUsd: 0,
+                          };
+                          acc.set(r.model, {
+                            model: r.model,
+                            requests: cur.requests + 1,
+                            inputTokens: cur.inputTokens + r.inputTokens,
+                            outputTokens: cur.outputTokens + r.outputTokens,
+                            cacheReadTokens: cur.cacheReadTokens + r.cacheReadTokens,
+                            estimatedCostUsd: cur.estimatedCostUsd + r.estimatedCostUsd,
+                          });
+                          return acc;
+                        }, new Map<string, (typeof usageMetricsData.byModel)[number]>()),
+                      )
+                        .map(([, v]) => v)
+                        .sort((a, b) => b.estimatedCostUsd - a.estimatedCostUsd)
+                    : usageMetricsData.byModel;
+
+                  const maxTokens = Math.max(1, ...hourlyBuckets.map((h) => h.tokens));
+
+                  return (
+                    <div style={{ display: "grid", gap: 14, minWidth: 0 }}>
+                      <div className="panel" style={{ padding: "10px 14px" }}>
+                        <div className="filter-bar">
+                          <div className="chip-group" role="group" aria-label="Time window">
+                            {(
+                              [
+                                { id: "all", label: "All time" },
+                                { id: "24h", label: "24h" },
+                                { id: "7d", label: "7d" },
+                                { id: "30d", label: "30d" },
+                              ] as const
+                            ).map((t) => (
+                              <button
+                                key={t.id}
+                                type="button"
+                                className={`btn ${tokensTimeFilter === t.id ? "active-chip" : ""}`}
+                                onClick={() => setTokensTimeFilter(t.id)}
+                              >
+                                {t.label}
+                              </button>
+                            ))}
+                          </div>
+                          <div className="filter-group">
+                            <select
+                              aria-label="Filter usage by harness"
+                              value={tokensHarnessFilter}
+                              onChange={(e) => setTokensHarnessFilter(e.target.value)}
+                            >
+                              <option value="all">All Harnesses</option>
+                              {availableHarnesses.map((h) => (
+                                <option key={h} value={h}>
+                                  {h}
+                                </option>
+                              ))}
+                            </select>
+                            <select
+                              aria-label="Filter usage by model"
+                              value={tokensModelFilter}
+                              onChange={(e) => setTokensModelFilter(e.target.value)}
+                            >
+                              <option value="all">All Models</option>
+                              {availableModels.map((m) => (
+                                <option key={m} value={m}>
+                                  {m}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+
+                      <section className="panel" style={{ display: "grid", gap: 14 }}>
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "baseline",
+                            justifyContent: "space-between",
+                            gap: 16,
+                            flexWrap: "wrap",
+                          }}
+                        >
+                          <div>
+                            <h2 style={{ margin: 0 }}>Hourly Token Distribution</h2>
+                            <span className="mono" style={{ fontSize: 12, color: "var(--muted)" }}>
+                              ${totalCost.toFixed(2)} est. cost · {totalReqs.toLocaleString()} reqs
+                              · {totalTokens.toLocaleString()} tokens · {cacheHitPct}% cache hit
+                            </span>
+                          </div>
+                        </div>
                         <div
                           style={{
                             display: "grid",
-                            gridTemplateColumns: "repeat(24, minmax(10px, 1fr))",
+                            gridTemplateColumns: "repeat(24, minmax(8px, 1fr))",
                             alignItems: "end",
                             gap: 4,
-                            height: 110,
+                            height: 120,
                             paddingTop: 8,
                           }}
                         >
-                          {usageMetricsData.hourly.map((h) => {
+                          {hourlyBuckets.map((h) => {
                             const pct = Math.max(4, Math.round((h.tokens / maxTokens) * 100));
                             return (
                               <div
@@ -4689,87 +4834,117 @@ export function App() {
                             );
                           })}
                         </div>
-                      );
-                    })()}
-                  </section>
+                      </section>
 
-                  <section className="panel" style={{ display: "grid", gap: 8 }}>
-                    <h2 style={{ margin: 0 }}>By Model</h2>
-                    <div className="table-wrapper" tabIndex={0}>
-                      <table>
-                        <thead>
-                          <tr>
-                            <th scope="col">Model</th>
-                            <th scope="col">Requests</th>
-                            <th scope="col">Input</th>
-                            <th scope="col">Output</th>
-                            <th scope="col">Cache Hit</th>
-                            <th scope="col">Est. Cost</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {usageMetricsData.byModel.map((m) => (
-                            <tr key={m.model}>
-                              <td>
-                                <strong>{m.model}</strong>
-                              </td>
-                              <td className="mono num">{m.requests.toLocaleString()}</td>
-                              <td className="mono num">{m.inputTokens.toLocaleString()}</td>
-                              <td className="mono num">{m.outputTokens.toLocaleString()}</td>
-                              <td className="mono num">{m.cacheReadTokens.toLocaleString()}</td>
-                              <td className="mono num">${m.estimatedCostUsd.toFixed(4)}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </section>
+                      <section className="panel" style={{ display: "grid", gap: 10 }}>
+                        <div
+                          className="underline-tabs"
+                          role="tablist"
+                          aria-label="Usage breakdown"
+                          style={{ borderBottom: "1px solid var(--border)" }}
+                        >
+                          <button
+                            type="button"
+                            role="tab"
+                            className="underline-tab"
+                            aria-selected={tokensSubTab === "logs"}
+                            onClick={() => setTokensSubTab("logs")}
+                          >
+                            <span>Request Logs ({filteredRequests.length})</span>
+                          </button>
+                          <button
+                            type="button"
+                            role="tab"
+                            className="underline-tab"
+                            aria-selected={tokensSubTab === "models"}
+                            onClick={() => setTokensSubTab("models")}
+                          >
+                            <span>Models ({modelRows.length})</span>
+                          </button>
+                        </div>
 
-                  <section className="panel" style={{ display: "grid", gap: 8 }}>
-                    <h2 style={{ margin: 0 }}>
-                      Recent Request Logs ({usageMetricsData.recentRequests.length})
-                    </h2>
-                    <div className="table-wrapper" tabIndex={0}>
-                      <table>
-                        <thead>
-                          <tr>
-                            <th scope="col">Time</th>
-                            <th scope="col">Harness</th>
-                            <th scope="col">Model</th>
-                            <th scope="col">Cost</th>
-                            <th scope="col">Input</th>
-                            <th scope="col">Output</th>
-                            <th scope="col">Cache Hit</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {usageMetricsData.recentRequests.map((r, idx) => (
-                            <tr key={`${r.timestamp}-${idx}`}>
-                              <td className="mono" style={{ color: "var(--muted)" }}>
-                                {new Date(r.timestamp).toLocaleTimeString()}
-                              </td>
-                              <td>
-                                <span
-                                  style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
-                                >
-                                  <HarnessIcon harnessId={r.harnessId} size={12} />
-                                  <span>{r.harnessId}</span>
-                                </span>
-                              </td>
-                              <td>
-                                <span className="badge">{r.model}</span>
-                              </td>
-                              <td className="mono num">${r.estimatedCostUsd.toFixed(4)}</td>
-                              <td className="mono num">{r.inputTokens.toLocaleString()}</td>
-                              <td className="mono num">{r.outputTokens.toLocaleString()}</td>
-                              <td className="mono num">{r.cacheReadTokens.toLocaleString()}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                        {tokensSubTab === "models" ? (
+                          <div className="table-wrapper" tabIndex={0}>
+                            <table>
+                              <thead>
+                                <tr>
+                                  <th scope="col">Model</th>
+                                  <th scope="col">Requests</th>
+                                  <th scope="col">Input</th>
+                                  <th scope="col">Output</th>
+                                  <th scope="col">Cache Hit</th>
+                                  <th scope="col">Est. Cost</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {modelRows.map((m) => (
+                                  <tr key={m.model}>
+                                    <td>
+                                      <strong>{m.model}</strong>
+                                    </td>
+                                    <td className="mono num">{m.requests.toLocaleString()}</td>
+                                    <td className="mono num">{m.inputTokens.toLocaleString()}</td>
+                                    <td className="mono num">{m.outputTokens.toLocaleString()}</td>
+                                    <td className="mono num">
+                                      {m.cacheReadTokens.toLocaleString()}
+                                    </td>
+                                    <td className="mono num">${m.estimatedCostUsd.toFixed(4)}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        ) : (
+                          <div className="table-wrapper" tabIndex={0}>
+                            <table>
+                              <thead>
+                                <tr>
+                                  <th scope="col">Time</th>
+                                  <th scope="col">Harness</th>
+                                  <th scope="col">Model</th>
+                                  <th scope="col">Cost</th>
+                                  <th scope="col">Input</th>
+                                  <th scope="col">Output</th>
+                                  <th scope="col">Cache Hit</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {filteredRequests.map((r, idx) => (
+                                  <tr key={`${r.timestamp}-${idx}`}>
+                                    <td className="mono" style={{ color: "var(--muted)" }}>
+                                      {new Date(r.timestamp).toLocaleTimeString()}
+                                    </td>
+                                    <td>
+                                      <span
+                                        style={{
+                                          display: "inline-flex",
+                                          alignItems: "center",
+                                          gap: 6,
+                                        }}
+                                      >
+                                        <HarnessIcon harnessId={r.harnessId} size={12} />
+                                        <span>{r.harnessId}</span>
+                                      </span>
+                                    </td>
+                                    <td>
+                                      <span className="badge">{r.model}</span>
+                                    </td>
+                                    <td className="mono num">${r.estimatedCostUsd.toFixed(4)}</td>
+                                    <td className="mono num">{r.inputTokens.toLocaleString()}</td>
+                                    <td className="mono num">{r.outputTokens.toLocaleString()}</td>
+                                    <td className="mono num">
+                                      {r.cacheReadTokens.toLocaleString()}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </section>
                     </div>
-                  </section>
-                </div>
+                  );
+                })()
               )
             ) : (
               <>
