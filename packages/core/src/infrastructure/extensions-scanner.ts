@@ -281,17 +281,28 @@ async function readHead(filePath: string, maxBytes = 8192): Promise<string> {
   }
 }
 
+function stripPromptTags(raw: string): string {
+  return raw
+    .replace(/<CONTEXT_SUMMARY>[\s\S]*?<\/CONTEXT_SUMMARY>/gi, " ")
+    .replace(/<ADDITIONAL_METADATA>[\s\S]*?<\/ADDITIONAL_METADATA>/gi, " ")
+    .replace(/<\/?USER_REQUEST>/gi, " ")
+    .replace(/^#+\s*/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function extractTextSnippet(rawContent: unknown): string | undefined {
   if (typeof rawContent === "string") {
-    const trimmed = rawContent.replace(/\s+/g, " ").trim();
-    return trimmed ? trimmed.slice(0, 96) : undefined;
+    const cleaned = stripPromptTags(rawContent);
+    return cleaned ? cleaned.slice(0, 96) : undefined;
   }
   if (Array.isArray(rawContent)) {
     for (const block of rawContent) {
       if (block && typeof block === "object") {
         const text = (block as Record<string, unknown>)["text"];
         if (typeof text === "string" && text.trim()) {
-          return text.replace(/\s+/g, " ").trim().slice(0, 96);
+          const cleaned = stripPromptTags(text);
+          if (cleaned) return cleaned.slice(0, 96);
         }
       }
     }
@@ -299,7 +310,7 @@ function extractTextSnippet(rawContent: unknown): string | undefined {
   return undefined;
 }
 
-export async function scanSessions(homeOverride?: string, limit = 200): Promise<SessionSummary[]> {
+export async function scanSessions(homeOverride?: string, limit = 250): Promise<SessionSummary[]> {
   const home = homeOverride ?? os.homedir();
   const roots: Array<{ dir: string; harness: HarnessId; depth: number }> = [
     ...discoverClaudeConfigDirs(home).map((d) => ({
@@ -315,6 +326,8 @@ export async function scanSessions(homeOverride?: string, limit = 200): Promise<
   for (const r of roots) {
     const found = await collectFilesRecursive(r.dir, r.depth, ".jsonl");
     for (const item of found) {
+      // Skip duplicate full-log mirror in Antigravity
+      if (path.basename(item.file) === "transcript_full.jsonl") continue;
       allFiles.push({ ...item, harness: r.harness });
     }
   }
@@ -324,50 +337,78 @@ export async function scanSessions(homeOverride?: string, limit = 200): Promise<
 
   const sessions: SessionSummary[] = [];
   for (const item of topFiles) {
-    const head = await readHead(item.file, 16384);
+    const head = await readHead(item.file, 65536);
     const lines = head.split(/\r?\n/).filter((l) => l.trim().length > 0);
     let title: string | undefined;
     let projectFolder: string | undefined;
     let model: string | undefined;
+    let sessionId: string | undefined;
 
-    for (const line of lines.slice(0, 20)) {
+    for (const line of lines.slice(0, 40)) {
+      let obj: Record<string, unknown>;
       try {
-        const obj = JSON.parse(line) as Record<string, unknown>;
-        if (!projectFolder && typeof obj["cwd"] === "string") {
-          projectFolder = obj["cwd"];
-        }
-        if (!model && typeof obj["model"] === "string") {
-          model = obj["model"];
-        }
-        const msg = obj["message"] as Record<string, unknown> | undefined;
-        if (!model && msg && typeof msg["model"] === "string") {
-          model = msg["model"];
-        }
+        obj = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+
+      if (!sessionId && typeof obj["sessionId"] === "string") {
+        sessionId = obj["sessionId"];
+      }
+      if (!projectFolder && typeof obj["cwd"] === "string") {
+        projectFolder = obj["cwd"];
+      }
+      if (!model && typeof obj["model"] === "string") {
+        model = obj["model"];
+      }
+
+      const payload = obj["payload"] as Record<string, unknown> | undefined;
+      if (payload && typeof payload === "object") {
+        if (!sessionId && typeof payload["id"] === "string") sessionId = payload["id"];
+        if (!projectFolder && typeof payload["cwd"] === "string") projectFolder = payload["cwd"];
+        if (!model && typeof payload["model"] === "string") model = payload["model"];
         if (!title) {
-          const role = obj["role"] ?? obj["type"] ?? msg?.["role"];
-          if (role === "user" || role === "USER_INPUT") {
-            const candidate =
-              extractTextSnippet(obj["content"]) ?? extractTextSnippet(msg?.["content"]);
-            if (candidate && !candidate.startsWith("<")) {
-              title = candidate;
-            }
+          if (payload["type"] === "user_message" && typeof payload["message"] === "string") {
+            title = extractTextSnippet(payload["message"]);
+          } else if (payload["role"] === "user") {
+            title = extractTextSnippet(payload["content"]);
           }
         }
-      } catch {
-        // Ignore partial line
       }
+
+      const msg = obj["message"] as Record<string, unknown> | undefined;
+      if (!model && msg && typeof msg["model"] === "string") {
+        model = msg["model"];
+      }
+      if (!title) {
+        const role = obj["role"] ?? obj["type"] ?? msg?.["role"];
+        if (role === "user" || role === "USER_INPUT") {
+          title = extractTextSnippet(obj["content"]) ?? extractTextSnippet(msg?.["content"]);
+        }
+      }
+
+      if (title && projectFolder && model && sessionId) break;
     }
 
     const baseId = path.basename(item.file, ".jsonl");
+    if (!sessionId) {
+      if (item.harness === "antigravity" && baseId === "transcript") {
+        // .../<uuid>/.system_generated/logs/transcript.jsonl
+        sessionId = path.basename(path.dirname(path.dirname(path.dirname(item.file))));
+      } else {
+        sessionId = baseId;
+      }
+    }
+
     const parentName = path.basename(path.dirname(item.file));
     if (!projectFolder && item.harness === "claude" && parentName.startsWith("-")) {
       projectFolder = parentName.replace(/-/g, "/");
     }
 
     sessions.push({
-      id: `${item.harness}:${baseId}`,
+      id: sessionId,
       harnessId: item.harness,
-      title: title ?? (projectFolder ? path.basename(projectFolder) : baseId),
+      title: title ?? (projectFolder ? path.basename(projectFolder) : sessionId),
       ...(projectFolder ? { projectFolder } : {}),
       updatedAt: new Date(item.mtimeMs).toISOString(),
       messageCount: lines.length,

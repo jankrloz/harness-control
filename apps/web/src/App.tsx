@@ -169,6 +169,21 @@ function SortIcon({ direction }: { readonly direction?: SortDirection | undefine
   return <ArrowUpDown size={12} opacity={0.4} aria-hidden="true" />;
 }
 
+function formatRelativeTime(iso: string): string {
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return iso;
+  const diffSec = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+  if (diffSec < 60) return "just now";
+  const mins = Math.floor(diffSec / 60);
+  if (mins < 60) return `${mins} min ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs} hr ago`;
+  const days = Math.floor(hrs / 24);
+  if (days === 1) return "1 day ago";
+  if (days < 30) return `${days} days ago`;
+  return new Date(ms).toLocaleDateString();
+}
+
 function LinkTypeIcon({
   linkType,
   size = 11,
@@ -322,6 +337,9 @@ export function App() {
   const [sessionSearch, setSessionSearch] = useState("");
   const [sessionHarnessFilter, setSessionHarnessFilter] = useState<string>("all");
   const [sessionGroupBy, setSessionGroupBy] = useState<"time" | "project">("time");
+  const [sessionSortBy, setSessionSortBy] = useState<"newest" | "oldest" | "title" | "messages">(
+    "newest",
+  );
   const [usageMetricsData, setUsageMetricsData] = useState<UsageDashboardSnapshot | null>(null);
   const [tokensTab, setTokensTab] = useState<"budgets" | "requests">("budgets");
   const [installPreview, setInstallPreview] = useState<DryRunPreview | null>(null);
@@ -3148,6 +3166,19 @@ export function App() {
                   </select>
                 </div>
                 <div className="filter-group">
+                  <span className="filter-group-label">Sort</span>
+                  <select
+                    aria-label="Sort sessions"
+                    value={sessionSortBy}
+                    onChange={(e) =>
+                      setSessionSortBy(e.target.value as "newest" | "oldest" | "title" | "messages")
+                    }
+                  >
+                    <option value="newest">Newest first</option>
+                    <option value="oldest">Oldest first</option>
+                    <option value="title">Title (A–Z)</option>
+                    <option value="messages">Most messages</option>
+                  </select>
                   <span className="filter-group-label">Group</span>
                   <div className="chip-group" role="group" aria-label="Group sessions">
                     <button
@@ -3170,31 +3201,56 @@ export function App() {
             </div>
 
             {(() => {
-              const filteredSessions = sessionsData.filter((s) => {
-                if (sessionHarnessFilter !== "all" && s.harnessId !== sessionHarnessFilter) {
-                  return false;
-                }
-                const q = sessionSearch.trim().toLowerCase();
-                if (!q) return true;
-                return (
-                  s.title.toLowerCase().includes(q) ||
-                  (s.projectFolder?.toLowerCase().includes(q) ?? false) ||
-                  s.id.toLowerCase().includes(q)
-                );
-              });
+              const filteredSessions = sessionsData
+                .filter((s) => {
+                  if (sessionHarnessFilter !== "all" && s.harnessId !== sessionHarnessFilter) {
+                    return false;
+                  }
+                  const q = sessionSearch.trim().toLowerCase();
+                  if (!q) return true;
+                  return (
+                    s.title.toLowerCase().includes(q) ||
+                    (s.projectFolder?.toLowerCase().includes(q) ?? false) ||
+                    (s.model?.toLowerCase().includes(q) ?? false) ||
+                    s.id.toLowerCase().includes(q)
+                  );
+                })
+                .sort((a, b) => {
+                  switch (sessionSortBy) {
+                    case "oldest":
+                      return Date.parse(a.updatedAt) - Date.parse(b.updatedAt);
+                    case "title":
+                      return a.title.localeCompare(b.title);
+                    case "messages":
+                      return b.messageCount - a.messageCount;
+                    case "newest":
+                    default:
+                      return Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
+                  }
+                });
               if (filteredSessions.length === 0) {
                 return <div className="panel empty-state">No sessions found.</div>;
               }
-              const now = Date.now();
-              const dayMs = 86_400_000;
+              const startOfToday = new Date();
+              startOfToday.setHours(0, 0, 0, 0);
+              const todayMs = startOfToday.getTime();
+              const yesterdayMs = todayMs - 86_400_000;
+              const weekMs = todayMs - 7 * 86_400_000;
               const groups = new Map<string, SessionSummary[]>();
               for (const s of filteredSessions) {
                 let key = "Earlier";
                 if (sessionGroupBy === "project") {
                   key = s.projectFolder ?? "Unknown workspace";
                 } else {
-                  const age = now - Date.parse(s.updatedAt);
-                  key = age < dayMs ? "Today" : age < 7 * dayMs ? "This week" : "Earlier";
+                  const t = Date.parse(s.updatedAt);
+                  key =
+                    t >= todayMs
+                      ? "Today"
+                      : t >= yesterdayMs
+                        ? "Yesterday"
+                        : t >= weekMs
+                          ? "This week"
+                          : "Earlier";
                 }
                 const list = groups.get(key) ?? [];
                 list.push(s);
@@ -3214,22 +3270,46 @@ export function App() {
                   </div>
                   <div className="table-wrapper" tabIndex={0}>
                     <table>
+                      <thead>
+                        <tr>
+                          <th scope="col">Harness</th>
+                          <th scope="col">Session</th>
+                          <th scope="col">Session ID</th>
+                          <th scope="col">Path</th>
+                          <th scope="col">Model</th>
+                          <th scope="col">Msgs</th>
+                          <th scope="col">Updated</th>
+                        </tr>
+                      </thead>
                       <tbody>
                         {items.map((s) => (
                           <tr key={s.id}>
-                            <td style={{ width: 32 }}>
-                              <HarnessIcon harnessId={s.harnessId} size={14} />
+                            <td>
+                              <span
+                                style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+                                title={s.harnessId}
+                              >
+                                <HarnessIcon harnessId={s.harnessId} size={14} />
+                                <span className="badge">{s.harnessId}</span>
+                              </span>
                             </td>
                             <td className="wrap-cell">
                               <strong>{s.title}</strong>
                               {s.projectFolder && (
-                                <div className="mono" style={{ color: "var(--muted)" }}>
+                                <div
+                                  className="mono"
+                                  title={s.projectFolder}
+                                  style={{ color: "var(--muted)", fontSize: 12 }}
+                                >
                                   {s.projectFolder}
                                 </div>
                               )}
                             </td>
                             <td>
-                              <span className="badge">{s.harnessId}</span>
+                              <CopyableText text={s.id} maxWidth={115} />
+                            </td>
+                            <td>
+                              <CopyableText text={s.transcriptPath} maxWidth={170} />
                             </td>
                             <td>
                               {s.model ? (
@@ -3238,9 +3318,13 @@ export function App() {
                                 <span style={{ color: "var(--muted)" }}>—</span>
                               )}
                             </td>
-                            <td className="mono num">{s.messageCount} msgs</td>
-                            <td className="mono" style={{ color: "var(--muted)" }}>
-                              {new Date(s.updatedAt).toLocaleString()}
+                            <td className="mono num">{s.messageCount}</td>
+                            <td
+                              className="mono"
+                              style={{ color: "var(--muted)" }}
+                              title={new Date(s.updatedAt).toLocaleString()}
+                            >
+                              {formatRelativeTime(s.updatedAt)}
                             </td>
                           </tr>
                         ))}
