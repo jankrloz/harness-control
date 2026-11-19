@@ -8,6 +8,8 @@ import type {
   CleanupQueueItem,
   DryRunPreview,
   HarnessId,
+  McpServerEntry,
+  PrimitiveEntry,
   PrimitiveKind,
   PrimitivesSnapshot,
   RemoveTargetScope,
@@ -24,6 +26,7 @@ import type {
   SkillContentResponse,
 } from "@harness-control/server";
 import { ActionMenu } from "./components/ui/action-menu";
+import { ModalDialog } from "./components/ui/modal-dialog";
 import {
   AlertTriangle,
   ArrowDown,
@@ -379,6 +382,9 @@ export function App() {
   const [primitiveSearch, setPrimitiveSearch] = useState("");
   const [primitiveHealthFilter, setPrimitiveHealthFilter] = useState<"all" | "drifted">("all");
   const [primitiveManagerFilter, setPrimitiveManagerFilter] = useState<string>("all");
+  const [selectedPrimitive, setSelectedPrimitive] = useState<
+    ({ readonly kind: "mcp" } & McpServerEntry) | PrimitiveEntry | null
+  >(null);
   const [sessionsData, setSessionsData] = useState<readonly SessionSummary[]>([]);
   const [sessionSearch, setSessionSearch] = useState("");
   const [sessionHarnessFilter, setSessionHarnessFilter] = useState<string>("all");
@@ -2273,7 +2279,9 @@ export function App() {
                           <SortIcon direction={sortCol === "projects" ? sortDir : undefined} />
                         </button>
                       </th>
-                      <th scope="col">Actions</th>
+                      <th scope="col" className="sticky-actions-col" style={{ textAlign: "right" }}>
+                        Actions
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -2408,7 +2416,11 @@ export function App() {
                           <td className="mono num">{skill.tokens.descriptionTokens}</td>
                           <td className="mono num">{skill.tokens.fullTokens}</td>
                           <td className="mono num">{skill.projectCount}</td>
-                          <td onClick={(e) => e.stopPropagation()} style={{ textAlign: "right" }}>
+                          <td
+                            className="sticky-actions-col"
+                            onClick={(e) => e.stopPropagation()}
+                            style={{ textAlign: "right" }}
+                          >
                             <ActionMenu
                               label={`Actions for ${skill.name}`}
                               items={[
@@ -2862,39 +2874,111 @@ export function App() {
                       )}
 
                       <div>
-                        <div className="nav-group-label" style={{ padding: 0 }}>
-                          Exposures ({selectedSkill.exposures.length})
+                        <div className="nav-group-label" style={{ padding: 0, marginBottom: 6 }}>
+                          Installed On ({selectedSkill.exposures.length})
                         </div>
-                        <div className="harness-badges" style={{ maxWidth: "100%" }}>
-                          {selectedSkill.exposures.map((exp, i) => {
-                            const scopeLabel = exp.scope === "global" ? "user" : "project";
-                            const linkLabel =
-                              exp.linkType === "physical-copy"
-                                ? "physical copy"
-                                : exp.linkType === "symlink-broken"
-                                  ? "broken symlink"
-                                  : "symlink";
-                            const tooltip = `${exp.harnessId} · ${scopeLabel}${exp.profile ? ` (${exp.profile})` : ""} · ${linkLabel}`;
-                            return (
-                              <span
-                                key={i}
-                                title={tooltip}
-                                className={`badge ${
-                                  exp.linkType === "symlink-broken" ? "danger" : ""
-                                }`}
+                        {(["global", "project"] as const).map((scopeKey) => {
+                          const scopeItems = selectedSkill.exposures.filter(
+                            (e) => e.scope === scopeKey,
+                          );
+                          if (scopeItems.length === 0) return null;
+                          return (
+                            <div key={scopeKey} style={{ marginBottom: 10 }}>
+                              <div
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: 5,
+                                  fontSize: 11,
+                                  fontWeight: 600,
+                                  color: "var(--muted)",
+                                  textTransform: "uppercase",
+                                  letterSpacing: "0.04em",
+                                  marginBottom: 4,
+                                }}
                               >
-                                <HarnessIcon harnessId={exp.harnessId} size={11} />
-                                {exp.scope === "global" ? (
-                                  <Globe size={10} aria-hidden="true" />
+                                {scopeKey === "global" ? (
+                                  <Globe size={11} aria-hidden="true" />
                                 ) : (
-                                  <FolderGit2 size={10} aria-hidden="true" />
+                                  <FolderGit2 size={11} aria-hidden="true" />
                                 )}
-                                <LinkTypeIcon linkType={exp.linkType} size={10} />
-                                {exp.profile && <span>{exp.profile}</span>}
-                              </span>
-                            );
-                          })}
-                        </div>
+                                <span>
+                                  {scopeKey === "global" ? "Global" : "Project"} (
+                                  {scopeItems.length})
+                                </span>
+                              </div>
+                              <div style={{ display: "grid", gap: 4 }}>
+                                {scopeItems.map((exp, i) => {
+                                  const linkLabel =
+                                    exp.linkType === "physical-copy"
+                                      ? "copy"
+                                      : exp.linkType === "symlink-broken"
+                                        ? "broken"
+                                        : "symlink";
+                                  return (
+                                    <div
+                                      key={`${exp.harnessId}-${exp.path}-${i}`}
+                                      className="panel"
+                                      style={{
+                                        padding: "6px 10px",
+                                        display: "flex",
+                                        alignItems: "center",
+                                        justifyContent: "space-between",
+                                        gap: 8,
+                                        flexWrap: "wrap",
+                                      }}
+                                    >
+                                      <span
+                                        style={{
+                                          display: "inline-flex",
+                                          alignItems: "center",
+                                          gap: 6,
+                                        }}
+                                      >
+                                        <HarnessIcon harnessId={exp.harnessId} size={13} />
+                                        <strong style={{ fontSize: 12.5 }}>{exp.harnessId}</strong>
+                                        {exp.profile && (
+                                          <span className="badge">{exp.profile}</span>
+                                        )}
+                                        <span
+                                          className={`badge ${
+                                            exp.linkType === "symlink-broken"
+                                              ? "danger"
+                                              : exp.linkType === "physical-copy"
+                                                ? "warn"
+                                                : "ok"
+                                          }`}
+                                        >
+                                          <LinkTypeIcon linkType={exp.linkType} size={10} />
+                                          <span>{linkLabel}</span>
+                                        </span>
+                                      </span>
+                                      <span
+                                        style={{
+                                          display: "inline-flex",
+                                          alignItems: "center",
+                                          gap: 6,
+                                          minWidth: 0,
+                                        }}
+                                      >
+                                        <CopyableText text={exp.path} maxWidth={260} />
+                                        <button
+                                          type="button"
+                                          className="icon-ghost-btn"
+                                          title={`Open in Finder: ${exp.path}`}
+                                          aria-label={`Open in Finder: ${exp.path}`}
+                                          onClick={() => void client.revealPath(exp.path)}
+                                        >
+                                          <FolderOpen size={12} aria-hidden="true" />
+                                        </button>
+                                      </span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
 
                       {selectedSkill.projectPaths.length > 0 && (
@@ -3246,7 +3330,11 @@ export function App() {
                               </span>
                             </th>
                           ))}
-                          <th scope="col" style={{ textAlign: "right" }}>
+                          <th
+                            scope="col"
+                            className="sticky-actions-col"
+                            style={{ textAlign: "right" }}
+                          >
                             Actions
                           </th>
                         </tr>
@@ -3256,7 +3344,11 @@ export function App() {
                           const firstPath = mcp.configPaths[0];
                           const firstHarness = mcp.harnesses[0];
                           return (
-                            <tr key={mcp.name}>
+                            <tr
+                              key={mcp.name}
+                              data-selected={selectedPrimitive?.id === mcp.id}
+                              onClick={() => setSelectedPrimitive({ ...mcp, kind: "mcp" })}
+                            >
                               <td>
                                 <div className="skill-name-cell">
                                   <strong>{mcp.name}</strong>
@@ -3298,10 +3390,20 @@ export function App() {
                                   </td>
                                 );
                               })}
-                              <td style={{ textAlign: "right" }}>
+                              <td
+                                className="sticky-actions-col"
+                                style={{ textAlign: "right" }}
+                                onClick={(e) => e.stopPropagation()}
+                              >
                                 <ActionMenu
                                   label={`Actions for MCP ${mcp.name}`}
                                   items={[
+                                    {
+                                      id: "inspect",
+                                      label: "Inspect details",
+                                      icon: <FileText size={13} />,
+                                      onSelect: () => setSelectedPrimitive({ ...mcp, kind: "mcp" }),
+                                    },
                                     {
                                       id: "upgrade",
                                       label: "Upgrade",
@@ -3417,14 +3519,22 @@ export function App() {
                           <th scope="col">Detail</th>
                           <th scope="col">Tokens</th>
                           <th scope="col">Path</th>
-                          <th scope="col" style={{ textAlign: "right" }}>
+                          <th
+                            scope="col"
+                            className="sticky-actions-col"
+                            style={{ textAlign: "right" }}
+                          >
                             Actions
                           </th>
                         </tr>
                       </thead>
                       <tbody>
                         {list.map((item) => (
-                          <tr key={item.id}>
+                          <tr
+                            key={item.id}
+                            data-selected={selectedPrimitive?.id === item.id}
+                            onClick={() => setSelectedPrimitive(item)}
+                          >
                             <td>
                               <div className="skill-name-cell">
                                 <strong>{item.name}</strong>
@@ -3458,10 +3568,20 @@ export function App() {
                             <td>
                               <CopyableText text={item.path} maxWidth={320} />
                             </td>
-                            <td style={{ textAlign: "right" }}>
+                            <td
+                              className="sticky-actions-col"
+                              style={{ textAlign: "right" }}
+                              onClick={(e) => e.stopPropagation()}
+                            >
                               <ActionMenu
                                 label={`Actions for ${item.name}`}
                                 items={[
+                                  {
+                                    id: "inspect",
+                                    label: "Inspect details",
+                                    icon: <FileText size={13} />,
+                                    onSelect: () => setSelectedPrimitive(item),
+                                  },
                                   {
                                     id: "upgrade",
                                     label: "Upgrade",
@@ -3530,6 +3650,241 @@ export function App() {
                 );
               })()
             )}
+
+            <ModalDialog
+              open={selectedPrimitive !== null}
+              onOpenChange={(open) => {
+                if (!open) setSelectedPrimitive(null);
+              }}
+              title={selectedPrimitive ? selectedPrimitive.name : ""}
+              description={
+                selectedPrimitive
+                  ? `${selectedPrimitive.kind.toUpperCase()} · ${selectedPrimitive.owningManager} · ${selectedPrimitive.scope} · ${selectedPrimitive.estimatedTokens.toLocaleString()} est. tokens`
+                  : ""
+              }
+              maxWidthClassName="max-w-[680px]"
+              footer={
+                selectedPrimitive ? (
+                  <>
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => {
+                        const p = selectedPrimitive;
+                        const firstExp = p.exposures[0];
+                        setSelectedPrimitive(null);
+                        void openPrimitiveActionPreview({
+                          action: "upgrade",
+                          kind: p.kind,
+                          name: p.name,
+                          owningManager: p.owningManager,
+                          scope: p.scope,
+                          ...(firstExp?.harnessId ? { harnessId: firstExp.harnessId } : {}),
+                          ...(firstExp?.path ? { path: firstExp.path } : {}),
+                        });
+                      }}
+                    >
+                      <ArrowUpCircle size={13} aria-hidden="true" />
+                      <span>Upgrade</span>
+                    </button>
+                    {selectedPrimitive.owningManager !== "apm" && (
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => {
+                          const p = selectedPrimitive;
+                          const firstExp = p.exposures[0];
+                          setSelectedPrimitive(null);
+                          void openPrimitiveActionPreview({
+                            action: "migrate-to-apm",
+                            kind: p.kind,
+                            name: p.name,
+                            owningManager: p.owningManager,
+                            scope: p.scope,
+                            ...(firstExp?.harnessId ? { harnessId: firstExp.harnessId } : {}),
+                            ...(firstExp?.path ? { path: firstExp.path } : {}),
+                          });
+                        }}
+                      >
+                        <Boxes size={13} aria-hidden="true" />
+                        <span>Migrate to APM</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="btn danger"
+                      onClick={() => {
+                        const p = selectedPrimitive;
+                        const firstExp = p.exposures[0];
+                        setSelectedPrimitive(null);
+                        void openPrimitiveActionPreview({
+                          action: "remove",
+                          kind: p.kind,
+                          name: p.name,
+                          owningManager: p.owningManager,
+                          scope: p.scope,
+                          ...(firstExp?.harnessId ? { harnessId: firstExp.harnessId } : {}),
+                          ...(firstExp?.path ? { path: firstExp.path } : {}),
+                        });
+                      }}
+                    >
+                      <Trash2 size={13} aria-hidden="true" />
+                      <span>Remove</span>
+                    </button>
+                  </>
+                ) : undefined
+              }
+            >
+              {selectedPrimitive && (
+                <div style={{ display: "grid", gap: 14 }}>
+                  {selectedPrimitive.hasDrift && (
+                    <div
+                      className="panel"
+                      style={{
+                        padding: "8px 12px",
+                        borderColor: "var(--warn)",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        fontSize: 12.5,
+                      }}
+                    >
+                      <AlertTriangle size={14} aria-hidden="true" />
+                      <span>
+                        {selectedPrimitive.driftSummary ??
+                          "Differing configurations across harnesses"}
+                      </span>
+                    </div>
+                  )}
+
+                  {"commandOrUrl" in selectedPrimitive && (
+                    <div>
+                      <div className="nav-group-label" style={{ padding: 0, marginBottom: 4 }}>
+                        Endpoint / Command ({selectedPrimitive.transport})
+                      </div>
+                      <CopyableText text={selectedPrimitive.commandOrUrl} maxWidth="100%" />
+                    </div>
+                  )}
+
+                  <div>
+                    <div className="nav-group-label" style={{ padding: 0, marginBottom: 6 }}>
+                      Installed On ({selectedPrimitive.exposures.length})
+                    </div>
+                    {(["global", "project"] as const).map((scopeKey) => {
+                      const scopeItems = selectedPrimitive.exposures.filter(
+                        (e) => e.scope === scopeKey,
+                      );
+                      if (scopeItems.length === 0) return null;
+                      return (
+                        <div key={scopeKey} style={{ marginBottom: 10 }}>
+                          <div
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 5,
+                              fontSize: 11,
+                              fontWeight: 600,
+                              color: "var(--muted)",
+                              textTransform: "uppercase",
+                              letterSpacing: "0.04em",
+                              marginBottom: 4,
+                            }}
+                          >
+                            {scopeKey === "global" ? (
+                              <Globe size={11} aria-hidden="true" />
+                            ) : (
+                              <FolderGit2 size={11} aria-hidden="true" />
+                            )}
+                            <span>
+                              {scopeKey === "global" ? "Global" : "Project"} ({scopeItems.length})
+                            </span>
+                          </div>
+                          <div style={{ display: "grid", gap: 6 }}>
+                            {scopeItems.map((exp, idx) => {
+                              const linkLabel = exp.linkType ?? "config";
+                              return (
+                                <div
+                                  key={`${exp.harnessId}-${exp.path}-${idx}`}
+                                  className="panel"
+                                  style={{
+                                    padding: "8px 10px",
+                                    display: "grid",
+                                    gap: 4,
+                                  }}
+                                >
+                                  <div
+                                    style={{
+                                      display: "flex",
+                                      alignItems: "center",
+                                      justifyContent: "space-between",
+                                      gap: 8,
+                                      flexWrap: "wrap",
+                                    }}
+                                  >
+                                    <span
+                                      style={{
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        gap: 6,
+                                      }}
+                                    >
+                                      <HarnessIcon harnessId={exp.harnessId} size={13} />
+                                      <strong style={{ fontSize: 12.5 }}>{exp.harnessId}</strong>
+                                      <span
+                                        className={`badge ${
+                                          linkLabel === "symlink"
+                                            ? "ok"
+                                            : linkLabel === "copy"
+                                              ? "warn"
+                                              : ""
+                                        }`}
+                                      >
+                                        {linkLabel}
+                                      </span>
+                                    </span>
+                                    <span
+                                      style={{
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        gap: 6,
+                                        minWidth: 0,
+                                      }}
+                                    >
+                                      <CopyableText text={exp.path} maxWidth={280} />
+                                      <button
+                                        type="button"
+                                        className="icon-ghost-btn"
+                                        title={`Open in Finder: ${exp.path}`}
+                                        aria-label={`Open in Finder: ${exp.path}`}
+                                        onClick={() => void client.revealPath(exp.path)}
+                                      >
+                                        <FolderOpen size={12} aria-hidden="true" />
+                                      </button>
+                                    </span>
+                                  </div>
+                                  {exp.detail && (
+                                    <div
+                                      className="mono"
+                                      style={{
+                                        fontSize: 11.5,
+                                        color: "var(--muted)",
+                                        wordBreak: "break-all",
+                                      }}
+                                    >
+                                      {exp.detail}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </ModalDialog>
           </div>
         )}
 

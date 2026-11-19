@@ -98,6 +98,18 @@ async function estimateFileTokens(filePath: string, fallbackText: string): Promi
   }
 }
 
+async function detectLinkType(
+  filePath: string,
+  fallback: "copy" | "config",
+): Promise<"symlink" | "copy" | "config"> {
+  try {
+    const st = await fs.lstat(filePath);
+    return st.isSymbolicLink() ? "symlink" : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 function addMcpMap(
   map: Map<
     string,
@@ -115,6 +127,7 @@ function addMcpMap(
   serversObj: unknown,
   harnessId: HarnessId,
   configPath: string,
+  linkType: "symlink" | "copy" | "config" = "config",
 ) {
   if (!serversObj || typeof serversObj !== "object" || Array.isArray(serversObj)) return;
   for (const [name, rawCfg] of Object.entries(serversObj as Record<string, unknown>)) {
@@ -141,6 +154,7 @@ function addMcpMap(
       scope: "global",
       path: configPath,
       detail: commandOrUrl,
+      linkType,
     };
     const cfgSize = JSON.stringify(rawCfg).length;
 
@@ -222,8 +236,9 @@ export async function scanPrimitives(homeOverride?: string): Promise<PrimitivesS
     jsonMcpSources.map(async (src) => {
       const data = await readJsonSafe(src.file);
       if (!data) return;
+      const linkType = await detectLinkType(src.file, "config");
       for (const key of src.keys) {
-        addMcpMap(mcpMap, data[key], src.harness, src.file);
+        addMcpMap(mcpMap, data[key], src.harness, src.file, linkType);
       }
     }),
   );
@@ -287,6 +302,7 @@ export async function scanPrimitives(homeOverride?: string): Promise<PrimitivesS
     for (const file of files) {
       const name = path.basename(file).replace(/\.(md|toml)$/i, "");
       const estimatedTokens = await estimateFileTokens(file, name);
+      const linkType = await detectLinkType(file, "copy");
       const entry: PrimitiveEntry = {
         id: `${cd.harness}:${cd.kind}:${path.basename(file)}`,
         kind: cd.kind,
@@ -295,7 +311,7 @@ export async function scanPrimitives(homeOverride?: string): Promise<PrimitivesS
         path: file,
         scope: "global",
         owningManager: inferPrimitiveManager(file, apmManagedNames, name),
-        exposures: [{ harnessId: cd.harness, scope: "global", path: file }],
+        exposures: [{ harnessId: cd.harness, scope: "global", path: file, linkType }],
         hasDrift: false,
         estimatedTokens,
       };

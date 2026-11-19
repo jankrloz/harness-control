@@ -6,6 +6,7 @@ export interface PrimitiveExposure {
   readonly scope: "global" | "project";
   readonly path: string;
   readonly detail?: string;
+  readonly linkType?: "symlink" | "copy" | "config";
 }
 
 export interface McpServerEntry {

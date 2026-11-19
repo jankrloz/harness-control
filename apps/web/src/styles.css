@@ -660,6 +660,23 @@ td.wrap-cell {
   font-size: 12px;
 }
 
+.sticky-actions-col {
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  background: var(--surface);
+  box-shadow: -8px 0 16px -10px rgba(0, 0, 0, 0.45);
+}
+
+thead .sticky-actions-col {
+  z-index: 3;
+  background: var(--surface-2);
+}
+
+tr:hover > .sticky-actions-col {
+  background: var(--surface-hover);
+}
+
 thead th {
   position: sticky;
   inset-block-start: 0;
