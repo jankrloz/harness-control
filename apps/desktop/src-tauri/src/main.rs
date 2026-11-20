@@ -136,7 +136,11 @@ fn main() {
                     }
                 });
 
-            if let Some(icon) = app.default_window_icon() {
+            if let Ok(tray_icon) =
+                tauri::image::Image::from_bytes(include_bytes!("../icons/tray-icon.png"))
+            {
+                builder = builder.icon(tray_icon).icon_as_template(true);
+            } else if let Some(icon) = app.default_window_icon() {
                 builder = builder.icon(icon.clone());
             }
 

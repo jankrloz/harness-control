@@ -5,6 +5,7 @@ import { cn } from "../../lib/utils";
 export interface FilterSelectOption {
   readonly value: string;
   readonly label: string;
+  readonly disabled?: boolean;
 }
 
 export interface FilterSelectProps {
@@ -48,7 +49,8 @@ export function FilterSelect({
               <SelectPrimitive.Item
                 key={opt.value}
                 value={opt.value}
-                className="relative flex cursor-pointer select-none items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-[12.5px] outline-none data-[highlighted]:bg-[var(--panel-hover)] data-[state=checked]:font-medium"
+                disabled={Boolean(opt.disabled)}
+                className="relative flex cursor-pointer select-none items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-[12.5px] outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-40 data-[highlighted]:bg-[var(--panel-hover)] data-[state=checked]:font-medium"
               >
                 <SelectPrimitive.ItemText>{opt.label}</SelectPrimitive.ItemText>
                 <SelectPrimitive.ItemIndicator className="text-[var(--accent)]">

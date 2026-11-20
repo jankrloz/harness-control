@@ -101,8 +101,11 @@ AI coding assistants (`Claude Code`, `Codex`, `Gemini CLI`, `OpenCode`, `Cursor`
 Desktop app:
 
 ```bash
-brew install --cask jankrloz/tap/harness-control
+brew install --cask --no-quarantine jankrloz/tap/harness-control
 ```
+
+> [!NOTE]
+> macOS releases are currently unsigned (no Apple Developer ID certificate). Using `--no-quarantine` skips Gatekeeper quarantine on install; alternatively, install normally and click **Open Anyway** in **System Settings → Privacy & Security**.
 
 CLI & TUI:
 

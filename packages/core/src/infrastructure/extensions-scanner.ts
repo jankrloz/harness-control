@@ -11,7 +11,9 @@ import type {
   SessionDetail,
   SessionMessage,
   SessionSummary,
+  UsageDailyBucket,
   UsageDashboardSnapshot,
+  UsageHarnessBreakdown,
   UsageHourlyBucket,
   UsageModelBreakdown,
   UsageRequestLog,
@@ -746,10 +748,23 @@ export async function scanUsageMetrics(homeOverride?: string): Promise<UsageDash
       estimatedCostUsd: number;
     }
   >();
-  const hourlyMap = new Map<string, { tokens: number; requests: number }>();
+  const hourlyMap = new Map<string, { tokens: number; costUsd: number; requests: number }>();
   for (let h = 0; h < 24; h++) {
-    hourlyMap.set(`${String(h).padStart(2, "0")}:00`, { tokens: 0, requests: 0 });
+    hourlyMap.set(`${String(h).padStart(2, "0")}:00`, { tokens: 0, costUsd: 0, requests: 0 });
   }
+  const dailyMap = new Map<string, { tokens: number; costUsd: number; requests: number }>();
+  const byHarnessMap = new Map<
+    HarnessId,
+    {
+      harnessId: HarnessId;
+      requests: number;
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens: number;
+      estimatedCostUsd: number;
+      modelCounts: Map<string, number>;
+    }
+  >();
 
   const recentRequests: UsageRequestLog[] = [];
   let totalRequests = 0;
@@ -824,11 +839,35 @@ export async function scanUsageMetrics(homeOverride?: string): Promise<UsageDash
         const hb = hourlyMap.get(hourKey);
         if (hb) {
           hb.tokens += inputTokens + outputTokens + cacheReadTokens;
+          hb.costUsd += cost;
           hb.requests += 1;
         }
+        const dayKey = dt.toISOString().slice(0, 10);
+        const db = dailyMap.get(dayKey) ?? { tokens: 0, costUsd: 0, requests: 0 };
+        db.tokens += inputTokens + outputTokens + cacheReadTokens;
+        db.costUsd += cost;
+        db.requests += 1;
+        dailyMap.set(dayKey, db);
       }
 
-      if (recentRequests.length < 100) {
+      const hbEntry = byHarnessMap.get(item.harness) ?? {
+        harnessId: item.harness,
+        requests: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        estimatedCostUsd: 0,
+        modelCounts: new Map<string, number>(),
+      };
+      hbEntry.requests += 1;
+      hbEntry.inputTokens += inputTokens;
+      hbEntry.outputTokens += outputTokens;
+      hbEntry.cacheReadTokens += cacheReadTokens;
+      hbEntry.estimatedCostUsd += cost;
+      hbEntry.modelCounts.set(model, (hbEntry.modelCounts.get(model) ?? 0) + 1);
+      byHarnessMap.set(item.harness, hbEntry);
+
+      if (recentRequests.length < 250) {
         recentRequests.push({
           timestamp,
           harnessId: item.harness,
@@ -851,12 +890,38 @@ export async function scanUsageMetrics(homeOverride?: string): Promise<UsageDash
   const hourly: UsageHourlyBucket[] = Array.from(hourlyMap.entries()).map(([hour, v]) => ({
     hour,
     tokens: v.tokens,
+    costUsd: Math.round(v.costUsd * 10000) / 10000,
     requests: v.requests,
   }));
+
+  const daily: UsageDailyBucket[] = Array.from(dailyMap.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .slice(-30)
+    .map(([date, v]) => ({
+      date,
+      tokens: v.tokens,
+      costUsd: Math.round(v.costUsd * 10000) / 10000,
+      requests: v.requests,
+    }));
 
   const byModel: UsageModelBreakdown[] = Array.from(byModelMap.values()).sort(
     (a, b) => b.estimatedCostUsd - a.estimatedCostUsd,
   );
+
+  const byHarness: UsageHarnessBreakdown[] = Array.from(byHarnessMap.values())
+    .map((h) => {
+      const topModel = Array.from(h.modelCounts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0];
+      return {
+        harnessId: h.harnessId,
+        requests: h.requests,
+        inputTokens: h.inputTokens,
+        outputTokens: h.outputTokens,
+        cacheReadTokens: h.cacheReadTokens,
+        estimatedCostUsd: Math.round(h.estimatedCostUsd * 10000) / 10000,
+        ...(topModel ? { topModel } : {}),
+      };
+    })
+    .sort((a, b) => b.estimatedCostUsd - a.estimatedCostUsd);
 
   recentRequests.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
 
@@ -864,10 +929,16 @@ export async function scanUsageMetrics(homeOverride?: string): Promise<UsageDash
     scannedAt: new Date().toISOString(),
     totalRequests,
     totalTokensProcessed,
+    totalInputTokens: totalInput,
+    totalOutputTokens: totalOutput,
+    totalCacheReadTokens: totalCacheRead,
+    activeDays: dailyMap.size,
     cacheHitRatePct,
     estimatedCostUsd: Math.round(totalCost * 100) / 100,
     hourly,
+    daily,
     byModel,
-    recentRequests: recentRequests.slice(0, 60),
+    byHarness,
+    recentRequests: recentRequests.slice(0, 150),
   };
 }

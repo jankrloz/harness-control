@@ -110,16 +110,40 @@ export interface UsageModelBreakdown {
 export interface UsageHourlyBucket {
   readonly hour: string;
   readonly tokens: number;
+  readonly costUsd: number;
   readonly requests: number;
+}
+
+export interface UsageDailyBucket {
+  readonly date: string;
+  readonly tokens: number;
+  readonly costUsd: number;
+  readonly requests: number;
+}
+
+export interface UsageHarnessBreakdown {
+  readonly harnessId: HarnessId;
+  readonly requests: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadTokens: number;
+  readonly estimatedCostUsd: number;
+  readonly topModel?: string;
 }
 
 export interface UsageDashboardSnapshot {
   readonly scannedAt: string;
   readonly totalRequests: number;
   readonly totalTokensProcessed: number;
+  readonly totalInputTokens: number;
+  readonly totalOutputTokens: number;
+  readonly totalCacheReadTokens: number;
+  readonly activeDays: number;
   readonly cacheHitRatePct: number;
   readonly estimatedCostUsd: number;
   readonly hourly: readonly UsageHourlyBucket[];
+  readonly daily: readonly UsageDailyBucket[];
   readonly byModel: readonly UsageModelBreakdown[];
+  readonly byHarness: readonly UsageHarnessBreakdown[];
   readonly recentRequests: readonly UsageRequestLog[];
 }

@@ -26,6 +26,7 @@ import type {
   SkillContentResponse,
 } from "@harness-control/server";
 import { ActionMenu } from "./components/ui/action-menu";
+import { FilterSelect } from "./components/ui/filter-select";
 import {
   AlertTriangle,
   ArrowDown,
@@ -401,6 +402,14 @@ export function App() {
   const [tokensHarnessFilter, setTokensHarnessFilter] = useState<string>("all");
   const [tokensModelFilter, setTokensModelFilter] = useState<string>("all");
   const [tokensSubTab, setTokensSubTab] = useState<"logs" | "models">("logs");
+  const [tokensChartMode, setTokensChartMode] = useState<"daily" | "hourly">("daily");
+  const [tokensMetric, setTokensMetric] = useState<"cost" | "tokens">("cost");
+  const [hoveredChartBar, setHoveredChartBar] = useState<{
+    label: string;
+    primary: string;
+    secondary: string;
+    xPct: number;
+  } | null>(null);
   const [installPreview, setInstallPreview] = useState<DryRunPreview | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
   const [liveAnnouncement, setLiveAnnouncement] = useState("");
@@ -410,9 +419,6 @@ export function App() {
   const searchId = useId();
   const discoverSearchId = useId();
   const installProjectId = useId();
-  const managerSelectId = useId();
-  const authorSelectId = useId();
-  const groupBySelectId = useId();
   const invCaptionId = useId();
 
   useEffect(() => {
@@ -1187,6 +1193,30 @@ export function App() {
         ];
       }
       case "tokens": {
+        if (tokensTab === "requests" && usageMetricsData) {
+          return [
+            {
+              label: "Total Tokens",
+              value: usageMetricsData.totalTokensProcessed.toLocaleString(),
+              icon: Cpu,
+            },
+            {
+              label: "Est. Cost",
+              value: `$${usageMetricsData.estimatedCostUsd.toFixed(2)}`,
+              icon: Sparkles,
+            },
+            {
+              label: "Requests / Active Days",
+              value: `${usageMetricsData.totalRequests.toLocaleString()} / ${usageMetricsData.activeDays}d`,
+              icon: Clock,
+            },
+            {
+              label: "Cache Hit Rate",
+              value: `${usageMetricsData.cacheHitRatePct}%`,
+              icon: Layers,
+            },
+          ];
+        }
         const topHarness = data.telemetry.byHarness[0];
         const heaviestProject = data.telemetry.byProject[0];
         return [
@@ -1301,6 +1331,8 @@ export function App() {
     harnessFilter,
     primitivesData,
     sessionsData,
+    tokensTab,
+    usageMetricsData,
     view,
   ]);
 
@@ -1422,7 +1454,18 @@ export function App() {
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-left">
-            <Boxes size={15} color="var(--accent-text)" aria-hidden="true" />
+            <svg width={16} height={16} viewBox="0 0 64 64" fill="none" aria-hidden="true">
+              <path
+                d="M18 18v28M46 18v28M18 32h28"
+                stroke="var(--accent-text)"
+                strokeWidth="6.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <circle cx="18" cy="18" r="5.5" fill="var(--accent-text)" />
+              <circle cx="46" cy="46" r="5.5" fill="var(--accent-text)" />
+              <circle cx="32" cy="32" r="4.5" fill="currentColor" />
+            </svg>
             <span>harness-control</span>
           </div>
           <button
@@ -2061,63 +2104,53 @@ export function App() {
                     />
 
                     <span className="filter-group-label">Facets</span>
-                    <label htmlFor={managerSelectId} className="visually-hidden">
-                      Filter by package manager
-                    </label>
-                    <select
-                      id={managerSelectId}
+                    <FilterSelect
+                      ariaLabel="Filter by package manager"
                       value={managerFilter}
-                      onChange={(e) => {
-                        setManagerFilter(e.target.value);
+                      onValueChange={(v) => {
+                        setManagerFilter(v);
                         setPage(0);
                       }}
-                    >
-                      <option value="all">All Managers</option>
-                      <option value="apm">APM</option>
-                      <option value="npx-skills">npx skills</option>
-                      <option value="claude-plugin">Claude Plugin</option>
-                      <option value="antigravity-plugin">Antigravity Plugin</option>
-                      <option value="gemini-extension">Gemini Extension</option>
-                      <option value="git-clone">git clone</option>
-                      <option value="manual">manual</option>
-                    </select>
+                      options={[
+                        { value: "all", label: "All Managers" },
+                        { value: "apm", label: "APM" },
+                        { value: "npx-skills", label: "npx skills" },
+                        { value: "claude-plugin", label: "Claude Plugin" },
+                        { value: "antigravity-plugin", label: "Antigravity Plugin" },
+                        { value: "gemini-extension", label: "Gemini Extension" },
+                        { value: "git-clone", label: "git clone" },
+                        { value: "manual", label: "manual" },
+                      ]}
+                    />
 
-                    <label htmlFor={authorSelectId} className="visually-hidden">
-                      Filter by source
-                    </label>
-                    <select
-                      id={authorSelectId}
+                    <FilterSelect
+                      ariaLabel="Filter by source"
                       value={authorFilter}
-                      onChange={(e) => {
-                        setAuthorFilter(e.target.value);
+                      onValueChange={(v) => {
+                        setAuthorFilter(v);
                         setPage(0);
                       }}
-                      style={{ maxWidth: 180 }}
-                    >
-                      <option value="all">All Sources</option>
-                      {authorList.map((a) => (
-                        <option key={a} value={a}>
-                          {a}
-                        </option>
-                      ))}
-                    </select>
+                      className="max-w-[190px]"
+                      options={[
+                        { value: "all", label: "All Sources" },
+                        ...authorList.map((a) => ({ value: a, label: a })),
+                      ]}
+                    />
 
-                    <label htmlFor={groupBySelectId} className="visually-hidden">
-                      Group skills by
-                    </label>
-                    <select
-                      id={groupBySelectId}
+                    <FilterSelect
+                      ariaLabel="Group skills by"
                       value={groupBy}
-                      onChange={(e) => {
-                        setGroupBy(e.target.value as "none" | "source" | "manager" | "harness");
+                      onValueChange={(v) => {
+                        setGroupBy(v as "none" | "source" | "manager" | "harness");
                         setCollapsedGroups(new Set());
                       }}
-                    >
-                      <option value="none">Group: None</option>
-                      <option value="source">Group: Source</option>
-                      <option value="manager">Group: Manager</option>
-                      <option value="harness">Group: Harness</option>
-                    </select>
+                      options={[
+                        { value: "none", label: "Group: None" },
+                        { value: "source", label: "Group: Source" },
+                        { value: "manager", label: "Group: Manager" },
+                        { value: "harness", label: "Group: Harness" },
+                      ]}
+                    />
                   </div>
 
                   <div className="filter-group">
@@ -3502,17 +3535,18 @@ export function App() {
                     onChange={(e) => setPrimitiveSearch(e.target.value)}
                   />
                   <div className="filter-group">
-                    <select
-                      aria-label="Filter by manager"
+                    <FilterSelect
+                      ariaLabel="Filter by manager"
                       value={primitiveManagerFilter}
-                      onChange={(e) => setPrimitiveManagerFilter(e.target.value)}
-                    >
-                      <option value="all">All Managers</option>
-                      <option value="apm">apm</option>
-                      <option value="claude-plugin">claude-plugin</option>
-                      <option value="gemini-extension">gemini-extension</option>
-                      <option value="manual">manual</option>
-                    </select>
+                      onValueChange={setPrimitiveManagerFilter}
+                      options={[
+                        { value: "all", label: "All Managers" },
+                        { value: "apm", label: "apm" },
+                        { value: "claude-plugin", label: "claude-plugin" },
+                        { value: "gemini-extension", label: "gemini-extension" },
+                        { value: "manual", label: "manual" },
+                      ]}
+                    />
                     <div className="chip-group" role="group" aria-label="Primitive health filter">
                       <button
                         type="button"
@@ -4330,37 +4364,33 @@ export function App() {
                         onChange={(e) => setSessionSearch(e.target.value)}
                         style={{ minWidth: 260, flex: "1 1 260px", maxWidth: 420 }}
                       />
-                      <select
-                        aria-label="Filter sessions by harness"
+                      <FilterSelect
+                        ariaLabel="Filter sessions by harness"
                         value={sessionHarnessFilter}
-                        onChange={(e) => setSessionHarnessFilter(e.target.value)}
-                      >
-                        <option value="all">All Harnesses</option>
-                        {Array.from(new Set(sessionsData.map((s) => s.harnessId)))
-                          .sort()
-                          .map((h) => (
-                            <option key={h} value={h}>
-                              {h}
-                            </option>
-                          ))}
-                      </select>
+                        onValueChange={setSessionHarnessFilter}
+                        options={[
+                          { value: "all", label: "All Harnesses" },
+                          ...Array.from(new Set(sessionsData.map((s) => s.harnessId)))
+                            .sort()
+                            .map((h) => ({ value: h, label: h })),
+                        ]}
+                      />
                     </div>
                     <div className="filter-group">
                       <span className="filter-group-label">Sort</span>
-                      <select
-                        aria-label="Sort sessions"
+                      <FilterSelect
+                        ariaLabel="Sort sessions"
                         value={sessionSortBy}
-                        onChange={(e) =>
-                          setSessionSortBy(
-                            e.target.value as "newest" | "oldest" | "title" | "messages",
-                          )
+                        onValueChange={(v) =>
+                          setSessionSortBy(v as "newest" | "oldest" | "title" | "messages")
                         }
-                      >
-                        <option value="newest">Newest first</option>
-                        <option value="oldest">Oldest first</option>
-                        <option value="title">Title (A–Z)</option>
-                        <option value="messages">Most messages</option>
-                      </select>
+                        options={[
+                          { value: "newest", label: "Newest first" },
+                          { value: "oldest", label: "Oldest first" },
+                          { value: "title", label: "Title (A–Z)" },
+                          { value: "messages", label: "Most messages" },
+                        ]}
+                      />
                       <span className="filter-group-label">Group</span>
                       <div className="chip-group" role="group" aria-label="Group sessions">
                         <button
@@ -4721,8 +4751,6 @@ export function App() {
                         .sort((a, b) => b.estimatedCostUsd - a.estimatedCostUsd)
                     : usageMetricsData.byModel;
 
-                  const maxTokens = Math.max(1, ...hourlyBuckets.map((h) => h.tokens));
-
                   return (
                     <div style={{ display: "grid", gap: 14, minWidth: 0 }}>
                       <div className="panel" style={{ padding: "10px 14px" }}>
@@ -4747,94 +4775,545 @@ export function App() {
                             ))}
                           </div>
                           <div className="filter-group">
-                            <select
-                              aria-label="Filter usage by harness"
+                            <FilterSelect
+                              ariaLabel="Filter usage by harness"
                               value={tokensHarnessFilter}
-                              onChange={(e) => setTokensHarnessFilter(e.target.value)}
-                            >
-                              <option value="all">All Harnesses</option>
-                              {availableHarnesses.map((h) => (
-                                <option key={h} value={h}>
-                                  {h}
-                                </option>
-                              ))}
-                            </select>
-                            <select
-                              aria-label="Filter usage by model"
+                              onValueChange={setTokensHarnessFilter}
+                              options={[
+                                { value: "all", label: "All Harnesses" },
+                                ...availableHarnesses.map((h) => ({ value: h, label: h })),
+                              ]}
+                            />
+                            <FilterSelect
+                              ariaLabel="Filter usage by model"
                               value={tokensModelFilter}
-                              onChange={(e) => setTokensModelFilter(e.target.value)}
-                            >
-                              <option value="all">All Models</option>
-                              {availableModels.map((m) => (
-                                <option key={m} value={m}>
-                                  {m}
-                                </option>
-                              ))}
-                            </select>
+                              onValueChange={setTokensModelFilter}
+                              options={[
+                                { value: "all", label: "All Models" },
+                                ...availableModels.map((m) => ({ value: m, label: m })),
+                              ]}
+                            />
                           </div>
                         </div>
                       </div>
 
-                      <section className="panel" style={{ display: "grid", gap: 14 }}>
-                        <div
-                          style={{
-                            display: "flex",
-                            alignItems: "baseline",
-                            justifyContent: "space-between",
-                            gap: 16,
-                            flexWrap: "wrap",
-                          }}
-                        >
-                          <div>
-                            <h2 style={{ margin: 0 }}>Hourly Token Distribution</h2>
-                            <span className="mono" style={{ fontSize: 12, color: "var(--muted)" }}>
-                              ${totalCost.toFixed(2)} est. cost · {totalReqs.toLocaleString()} reqs
-                              · {totalTokens.toLocaleString()} tokens · {cacheHitPct}% cache hit
-                            </span>
-                          </div>
-                        </div>
-                        <div
-                          style={{
-                            display: "grid",
-                            gridTemplateColumns: "repeat(24, minmax(8px, 1fr))",
-                            alignItems: "end",
-                            gap: 4,
-                            height: 120,
-                            paddingTop: 8,
-                          }}
-                        >
-                          {hourlyBuckets.map((h) => {
-                            const pct = Math.max(4, Math.round((h.tokens / maxTokens) * 100));
-                            return (
-                              <div
-                                key={h.hour}
-                                title={`${h.hour}: ${h.tokens.toLocaleString()} tokens (${h.requests} reqs)`}
-                                style={{
-                                  display: "flex",
-                                  flexDirection: "column",
-                                  alignItems: "center",
-                                  height: "100%",
-                                  justifyContent: "flex-end",
-                                  gap: 4,
-                                }}
-                              >
+                      {(() => {
+                        const inSum = isFiltered
+                          ? filteredRequests.reduce((s, r) => s + r.inputTokens, 0)
+                          : usageMetricsData.totalInputTokens;
+                        const outSum = isFiltered
+                          ? filteredRequests.reduce((s, r) => s + r.outputTokens, 0)
+                          : usageMetricsData.totalOutputTokens;
+                        const cacheSum = isFiltered
+                          ? filteredRequests.reduce((s, r) => s + r.cacheReadTokens, 0)
+                          : usageMetricsData.totalCacheReadTokens;
+                        const mixTotal = Math.max(1, inSum + outSum + cacheSum);
+                        const inPct = Math.round((inSum / mixTotal) * 1000) / 10;
+                        const outPct = Math.round((outSum / mixTotal) * 1000) / 10;
+                        const cachePct = Math.round((cacheSum / mixTotal) * 1000) / 10;
+
+                        const dailyMap = new Map<
+                          string,
+                          { date: string; tokens: number; costUsd: number; requests: number }
+                        >();
+                        if (isFiltered) {
+                          for (const r of filteredRequests) {
+                            const d = new Date(r.timestamp);
+                            if (Number.isNaN(d.getTime())) continue;
+                            const key = d.toISOString().slice(0, 10);
+                            const cur = dailyMap.get(key) ?? {
+                              date: key,
+                              tokens: 0,
+                              costUsd: 0,
+                              requests: 0,
+                            };
+                            cur.tokens += r.inputTokens + r.outputTokens + r.cacheReadTokens;
+                            cur.costUsd += r.estimatedCostUsd;
+                            cur.requests += 1;
+                            dailyMap.set(key, cur);
+                          }
+                        } else {
+                          for (const d of usageMetricsData.daily) {
+                            dailyMap.set(d.date, d);
+                          }
+                        }
+                        const dailyBuckets = Array.from(dailyMap.values())
+                          .sort((a, b) => a.date.localeCompare(b.date))
+                          .slice(-30);
+                        const maxDailyTokens = Math.max(1, ...dailyBuckets.map((d) => d.tokens));
+
+                        const harnessRows = isFiltered
+                          ? Array.from(
+                              filteredRequests.reduce((acc, r) => {
+                                const cur = acc.get(r.harnessId) ?? {
+                                  harnessId: r.harnessId,
+                                  requests: 0,
+                                  inputTokens: 0,
+                                  outputTokens: 0,
+                                  cacheReadTokens: 0,
+                                  estimatedCostUsd: 0,
+                                  topModel: r.model,
+                                };
+                                acc.set(r.harnessId, {
+                                  ...cur,
+                                  requests: cur.requests + 1,
+                                  inputTokens: cur.inputTokens + r.inputTokens,
+                                  outputTokens: cur.outputTokens + r.outputTokens,
+                                  cacheReadTokens: cur.cacheReadTokens + r.cacheReadTokens,
+                                  estimatedCostUsd: cur.estimatedCostUsd + r.estimatedCostUsd,
+                                });
+                                return acc;
+                              }, new Map<string, (typeof usageMetricsData.byHarness)[number]>()),
+                            )
+                              .map(([, v]) => v)
+                              .sort((a, b) => b.estimatedCostUsd - a.estimatedCostUsd)
+                          : usageMetricsData.byHarness;
+
+                        const chartItems =
+                          tokensChartMode === "daily"
+                            ? dailyBuckets.map((d) => ({
+                                key: d.date,
+                                label: d.date.slice(5),
+                                fullLabel: d.date,
+                                value: tokensMetric === "cost" ? d.costUsd : d.tokens,
+                                tokens: d.tokens,
+                                costUsd: d.costUsd,
+                                requests: d.requests,
+                              }))
+                            : hourlyBuckets.map((h) => ({
+                                key: h.hour,
+                                label: h.hour.slice(0, 2),
+                                fullLabel: h.hour,
+                                value:
+                                  tokensMetric === "cost"
+                                    ? "costUsd" in h
+                                      ? Number(h.costUsd)
+                                      : 0
+                                    : h.tokens,
+                                tokens: h.tokens,
+                                costUsd: "costUsd" in h ? Number(h.costUsd) : 0,
+                                requests: h.requests,
+                              }));
+                        const maxChartVal = Math.max(
+                          tokensMetric === "cost" ? 0.01 : 1,
+                          ...chartItems.map((i) => i.value),
+                        );
+
+                        return (
+                          <>
+                            <div
+                              style={{
+                                display: "grid",
+                                gap: 14,
+                                gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
+                              }}
+                            >
+                              <section className="panel" style={{ display: "grid", gap: 10 }}>
                                 <div
                                   style={{
-                                    width: "100%",
-                                    height: `${h.tokens > 0 ? pct : 3}%`,
-                                    background:
-                                      h.tokens > 0 ? "var(--accent-fill)" : "var(--border)",
-                                    borderRadius: 3,
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "space-between",
                                   }}
-                                />
-                                <span style={{ fontSize: 9, color: "var(--muted)" }}>
-                                  {h.hour.slice(0, 2)}
-                                </span>
+                                >
+                                  <h2 style={{ margin: 0, fontSize: 14 }}>Token Mix</h2>
+                                  <span
+                                    className="mono"
+                                    style={{ fontSize: 11.5, color: "var(--muted)" }}
+                                  >
+                                    {totalTokens.toLocaleString()} total
+                                  </span>
+                                </div>
+                                <div
+                                  style={{
+                                    height: 10,
+                                    borderRadius: 999,
+                                    overflow: "hidden",
+                                    display: "flex",
+                                    background: "var(--surface-2)",
+                                  }}
+                                >
+                                  <div
+                                    title={`New input: ${inSum.toLocaleString()} (${inPct}%)`}
+                                    style={{
+                                      width: `${inPct}%`,
+                                      background: "#38bdf8",
+                                      minWidth: inSum > 0 ? 3 : 0,
+                                    }}
+                                  />
+                                  <div
+                                    title={`Output: ${outSum.toLocaleString()} (${outPct}%)`}
+                                    style={{
+                                      width: `${outPct}%`,
+                                      background: "#a855f7",
+                                      minWidth: outSum > 0 ? 3 : 0,
+                                    }}
+                                  />
+                                  <div
+                                    title={`Cache read: ${cacheSum.toLocaleString()} (${cachePct}%)`}
+                                    style={{
+                                      width: `${cachePct}%`,
+                                      background: "var(--accent-fill)",
+                                      minWidth: cacheSum > 0 ? 3 : 0,
+                                    }}
+                                  />
+                                </div>
+                                <div
+                                  style={{
+                                    display: "flex",
+                                    gap: 14,
+                                    flexWrap: "wrap",
+                                    fontSize: 12,
+                                    color: "var(--muted)",
+                                  }}
+                                >
+                                  <span>
+                                    <span style={{ color: "#38bdf8" }}>●</span> New input{" "}
+                                    <strong style={{ color: "var(--text)" }}>
+                                      {inSum.toLocaleString()}
+                                    </strong>{" "}
+                                    ({inPct}%)
+                                  </span>
+                                  <span>
+                                    <span style={{ color: "#a855f7" }}>●</span> Output{" "}
+                                    <strong style={{ color: "var(--text)" }}>
+                                      {outSum.toLocaleString()}
+                                    </strong>{" "}
+                                    ({outPct}%)
+                                  </span>
+                                  <span>
+                                    <span style={{ color: "var(--accent-text)" }}>●</span> Cache{" "}
+                                    <strong style={{ color: "var(--text)" }}>
+                                      {cacheSum.toLocaleString()}
+                                    </strong>{" "}
+                                    ({cachePct}%)
+                                  </span>
+                                </div>
+                              </section>
+
+                              <section className="panel" style={{ display: "grid", gap: 10 }}>
+                                <div
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "space-between",
+                                  }}
+                                >
+                                  <h2 style={{ margin: 0, fontSize: 14 }}>Daily Intensity</h2>
+                                  <span
+                                    className="mono"
+                                    style={{ fontSize: 11.5, color: "var(--muted)" }}
+                                  >
+                                    {dailyBuckets.length} active day
+                                    {dailyBuckets.length === 1 ? "" : "s"}
+                                  </span>
+                                </div>
+                                <div
+                                  style={{
+                                    display: "flex",
+                                    flexWrap: "wrap",
+                                    gap: 4,
+                                    alignItems: "center",
+                                  }}
+                                >
+                                  {dailyBuckets.length === 0 ? (
+                                    <span style={{ fontSize: 12, color: "var(--muted)" }}>
+                                      No activity in selected window.
+                                    </span>
+                                  ) : (
+                                    dailyBuckets.map((d) => {
+                                      const ratio = d.tokens / maxDailyTokens;
+                                      const alpha =
+                                        ratio > 0.75
+                                          ? 1
+                                          : ratio > 0.45
+                                            ? 0.72
+                                            : ratio > 0.2
+                                              ? 0.45
+                                              : 0.25;
+                                      return (
+                                        <div
+                                          key={d.date}
+                                          title={`${d.date}: ${d.tokens.toLocaleString()} tokens · $${d.costUsd.toFixed(2)} · ${d.requests} reqs`}
+                                          style={{
+                                            width: 14,
+                                            height: 14,
+                                            borderRadius: 3,
+                                            background: "var(--accent-fill)",
+                                            opacity: alpha,
+                                          }}
+                                        />
+                                      );
+                                    })
+                                  )}
+                                </div>
+                              </section>
+                            </div>
+
+                            <section
+                              className="panel"
+                              style={{ display: "grid", gap: 12, position: "relative" }}
+                              onMouseLeave={() => setHoveredChartBar(null)}
+                            >
+                              <div
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "space-between",
+                                  gap: 12,
+                                  flexWrap: "wrap",
+                                }}
+                              >
+                                <div>
+                                  <h2 style={{ margin: 0 }}>
+                                    {tokensChartMode === "daily" ? "Daily" : "Hourly"}{" "}
+                                    {tokensMetric === "cost" ? "Spend" : "Tokens"}
+                                  </h2>
+                                  <span
+                                    className="mono"
+                                    style={{ fontSize: 12, color: "var(--muted)" }}
+                                  >
+                                    ${totalCost.toFixed(2)} est. cost · {totalReqs.toLocaleString()}{" "}
+                                    reqs · {totalTokens.toLocaleString()} tokens · {cacheHitPct}%
+                                    cache hit
+                                  </span>
+                                </div>
+                                <div className="toolbar">
+                                  <div
+                                    className="chip-group"
+                                    role="group"
+                                    aria-label="Chart granularity"
+                                  >
+                                    <button
+                                      type="button"
+                                      className={`btn ${tokensChartMode === "daily" ? "active-chip" : ""}`}
+                                      onClick={() => setTokensChartMode("daily")}
+                                    >
+                                      Daily
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={`btn ${tokensChartMode === "hourly" ? "active-chip" : ""}`}
+                                      onClick={() => setTokensChartMode("hourly")}
+                                    >
+                                      Hourly
+                                    </button>
+                                  </div>
+                                  <div
+                                    className="chip-group"
+                                    role="group"
+                                    aria-label="Chart metric"
+                                  >
+                                    <button
+                                      type="button"
+                                      className={`btn ${tokensMetric === "cost" ? "active-chip" : ""}`}
+                                      onClick={() => setTokensMetric("cost")}
+                                    >
+                                      Cost ($)
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={`btn ${tokensMetric === "tokens" ? "active-chip" : ""}`}
+                                      onClick={() => setTokensMetric("tokens")}
+                                    >
+                                      Tokens
+                                    </button>
+                                  </div>
+                                </div>
                               </div>
-                            );
-                          })}
-                        </div>
-                      </section>
+
+                              {hoveredChartBar && (
+                                <div
+                                  className="panel"
+                                  style={{
+                                    position: "absolute",
+                                    top: 46,
+                                    left: `${Math.min(82, Math.max(8, hoveredChartBar.xPct))}%`,
+                                    transform: "translateX(-50%)",
+                                    zIndex: 10,
+                                    padding: "6px 10px",
+                                    pointerEvents: "none",
+                                    background: "var(--surface-2)",
+                                    borderColor: "var(--border-strong)",
+                                    boxShadow: "0 8px 24px rgba(0,0,0,0.35)",
+                                    fontSize: 11.5,
+                                    whiteSpace: "nowrap",
+                                  }}
+                                >
+                                  <strong>{hoveredChartBar.label}</strong>
+                                  <div className="mono" style={{ color: "var(--accent-text)" }}>
+                                    {hoveredChartBar.primary}
+                                  </div>
+                                  <div className="mono" style={{ color: "var(--muted)" }}>
+                                    {hoveredChartBar.secondary}
+                                  </div>
+                                </div>
+                              )}
+
+                              <div style={{ display: "flex", gap: 10, alignItems: "stretch" }}>
+                                <div
+                                  className="mono"
+                                  style={{
+                                    display: "flex",
+                                    flexDirection: "column",
+                                    justifyContent: "space-between",
+                                    fontSize: 10,
+                                    color: "var(--muted)",
+                                    paddingBottom: 18,
+                                    minWidth: 46,
+                                    textAlign: "right",
+                                  }}
+                                >
+                                  <span>
+                                    {tokensMetric === "cost"
+                                      ? `$${maxChartVal.toFixed(0)}`
+                                      : `${Math.round(maxChartVal / 1000).toLocaleString()}k`}
+                                  </span>
+                                  <span>
+                                    {tokensMetric === "cost"
+                                      ? `$${(maxChartVal / 2).toFixed(0)}`
+                                      : `${Math.round(maxChartVal / 2000).toLocaleString()}k`}
+                                  </span>
+                                  <span>{tokensMetric === "cost" ? "$0" : "0"}</span>
+                                </div>
+                                <div
+                                  style={{
+                                    flex: 1,
+                                    display: "grid",
+                                    gridTemplateColumns: `repeat(${Math.max(1, chartItems.length)}, minmax(10px, 1fr))`,
+                                    alignItems: "end",
+                                    gap: 4,
+                                    height: 150,
+                                    paddingTop: 8,
+                                  }}
+                                >
+                                  {chartItems.map((item, idx) => {
+                                    const pct = Math.max(
+                                      4,
+                                      Math.round((item.value / maxChartVal) * 100),
+                                    );
+                                    const xPct =
+                                      chartItems.length <= 1
+                                        ? 50
+                                        : ((idx + 0.5) / chartItems.length) * 100;
+                                    return (
+                                      <div
+                                        key={item.key}
+                                        onMouseEnter={() =>
+                                          setHoveredChartBar({
+                                            label: item.fullLabel,
+                                            primary: `$${item.costUsd.toFixed(2)} · ${item.tokens.toLocaleString()} tokens`,
+                                            secondary: `${item.requests.toLocaleString()} requests`,
+                                            xPct,
+                                          })
+                                        }
+                                        style={{
+                                          display: "flex",
+                                          flexDirection: "column",
+                                          alignItems: "center",
+                                          height: "100%",
+                                          justifyContent: "flex-end",
+                                          gap: 4,
+                                          cursor: "pointer",
+                                        }}
+                                      >
+                                        <div
+                                          style={{
+                                            width: "100%",
+                                            maxWidth: 28,
+                                            height: `${item.value > 0 ? pct : 3}%`,
+                                            background:
+                                              item.value > 0
+                                                ? "var(--accent-fill)"
+                                                : "var(--border)",
+                                            borderRadius: 4,
+                                            transition: "filter 120ms ease",
+                                          }}
+                                        />
+                                        <span style={{ fontSize: 9, color: "var(--muted)" }}>
+                                          {item.label}
+                                        </span>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            </section>
+
+                            {harnessRows.length > 0 && (
+                              <section className="panel" style={{ display: "grid", gap: 10 }}>
+                                <h2 style={{ margin: 0, fontSize: 14 }}>By Harness / Provider</h2>
+                                <div
+                                  style={{
+                                    display: "grid",
+                                    gap: 10,
+                                    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+                                  }}
+                                >
+                                  {harnessRows.map((hr) => {
+                                    const hrTokens =
+                                      hr.inputTokens + hr.outputTokens + hr.cacheReadTokens;
+                                    const sharePct =
+                                      totalCost > 0
+                                        ? Math.round((hr.estimatedCostUsd / totalCost) * 1000) / 10
+                                        : 0;
+                                    return (
+                                      <div
+                                        key={hr.harnessId}
+                                        className="panel"
+                                        style={{
+                                          padding: "10px 12px",
+                                          display: "grid",
+                                          gap: 6,
+                                          background: "var(--surface-2)",
+                                        }}
+                                      >
+                                        <div
+                                          style={{
+                                            display: "flex",
+                                            alignItems: "center",
+                                            justifyContent: "space-between",
+                                            gap: 8,
+                                          }}
+                                        >
+                                          <span
+                                            style={{
+                                              display: "inline-flex",
+                                              alignItems: "center",
+                                              gap: 6,
+                                            }}
+                                          >
+                                            <HarnessIcon harnessId={hr.harnessId} size={14} />
+                                            <strong>{hr.harnessId}</strong>
+                                          </span>
+                                          <span className="mono" style={{ fontWeight: 600 }}>
+                                            ${hr.estimatedCostUsd.toFixed(2)}
+                                          </span>
+                                        </div>
+                                        {hr.topModel && (
+                                          <div
+                                            className="mono"
+                                            style={{ fontSize: 11, color: "var(--muted)" }}
+                                          >
+                                            {hr.topModel}
+                                          </div>
+                                        )}
+                                        <div
+                                          className="mono"
+                                          style={{ fontSize: 11.5, color: "var(--muted)" }}
+                                        >
+                                          {hrTokens.toLocaleString()} tok ·{" "}
+                                          {hr.requests.toLocaleString()} reqs · {sharePct}%
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </section>
+                            )}
+                          </>
+                        );
+                      })()}
 
                       <section className="panel" style={{ display: "grid", gap: 10 }}>
                         <div
@@ -5735,56 +6214,62 @@ export function App() {
                                       {c.descriptionTokens} / {c.fullTokens}
                                     </td>
                                     <td>
-                                      <select
-                                        className="select"
-                                        aria-label={`Action for ${c.skillName}`}
+                                      <FilterSelect
+                                        ariaLabel={`Action for ${c.skillName}`}
                                         value={dec.action}
-                                        onChange={(e) => {
-                                          const action = e.target.value as CleanupActionChoice;
+                                        onValueChange={(v) => {
+                                          const action = v as CleanupActionChoice;
                                           setCleanupDecisions((prev) => ({
                                             ...prev,
                                             [key]: {
                                               ...dec,
                                               action,
-                                              selected: action !== "skip" ? true : false,
+                                              selected: action !== "skip",
                                             },
                                           }));
                                         }}
-                                      >
-                                        <option value="remove" disabled={!c.canCliRemove}>
-                                          Remove (CLI)
-                                        </option>
-                                        <option value="migrate-to-apm" disabled={!c.canCliMigrate}>
-                                          Migrate to APM
-                                        </option>
-                                        <option value="upgrade" disabled={!c.canCliUpgrade}>
-                                          Upgrade (CLI)
-                                        </option>
-                                        <option value="skip">Skip</option>
-                                      </select>
+                                        options={[
+                                          {
+                                            value: "remove",
+                                            label: "Remove (CLI)",
+                                            disabled: !c.canCliRemove,
+                                          },
+                                          {
+                                            value: "migrate-to-apm",
+                                            label: "Migrate to APM",
+                                            disabled: !c.canCliMigrate,
+                                          },
+                                          {
+                                            value: "upgrade",
+                                            label: "Upgrade (CLI)",
+                                            disabled: !c.canCliUpgrade,
+                                          },
+                                          { value: "skip", label: "Skip" },
+                                        ]}
+                                      />
                                     </td>
                                     <td>
                                       {dec.action === "remove" ? (
-                                        <select
-                                          className="select"
-                                          aria-label={`Scope for ${c.skillName}`}
+                                        <FilterSelect
+                                          ariaLabel={`Scope for ${c.skillName}`}
                                           value={dec.targetScope}
-                                          onChange={(e) => {
-                                            const targetScope = e.target.value as RemoveTargetScope;
+                                          onValueChange={(v) => {
+                                            const targetScope = v as RemoveTargetScope;
                                             setCleanupDecisions((prev) => ({
                                               ...prev,
                                               [key]: { ...dec, targetScope },
                                             }));
                                           }}
-                                        >
-                                          <option value="all">Both (User + Projects)</option>
-                                          {c.hasGlobal && (
-                                            <option value="global">User / Global</option>
-                                          )}
-                                          {c.projectPaths.length > 0 && (
-                                            <option value="project">Projects only</option>
-                                          )}
-                                        </select>
+                                          options={[
+                                            { value: "all", label: "Both (User + Projects)" },
+                                            ...(c.hasGlobal
+                                              ? [{ value: "global", label: "User / Global" }]
+                                              : []),
+                                            ...(c.projectPaths.length > 0
+                                              ? [{ value: "project", label: "Projects only" }]
+                                              : []),
+                                          ]}
+                                        />
                                       ) : (
                                         <span style={{ color: "var(--muted)", fontSize: 11 }}>
                                           —
@@ -5833,33 +6318,29 @@ export function App() {
                     <span className="nav-group-label" style={{ padding: 0 }}>
                       Remove Scope
                     </span>
-                    <select
-                      className="select"
-                      aria-label="Remove scope"
+                    <FilterSelect
+                      ariaLabel="Remove scope"
                       value={previewModal.removeContext.targetScope}
-                      onChange={(e) => {
-                        const targetScope = e.target.value as
-                          | "all"
-                          | "global"
-                          | "project"
-                          | "selected-projects";
+                      onValueChange={(v) => {
+                        const targetScope = v as "all" | "global" | "project" | "selected-projects";
                         void updateRemoveContext({
                           ...previewModal.removeContext!,
                           targetScope,
                         });
                       }}
-                    >
-                      <option value="all">Both (User / Global + All Projects)</option>
-                      {previewModal.removeContext.hasGlobal && (
-                        <option value="global">User / Global only</option>
-                      )}
-                      {previewModal.removeContext.availableProjects.length > 0 && (
-                        <option value="project">All Project instances only</option>
-                      )}
-                      {previewModal.removeContext.availableProjects.length > 0 && (
-                        <option value="selected-projects">Select by project…</option>
-                      )}
-                    </select>
+                      options={[
+                        { value: "all", label: "Both (User / Global + All Projects)" },
+                        ...(previewModal.removeContext.hasGlobal
+                          ? [{ value: "global", label: "User / Global only" }]
+                          : []),
+                        ...(previewModal.removeContext.availableProjects.length > 0
+                          ? [
+                              { value: "project", label: "All Project instances only" },
+                              { value: "selected-projects", label: "Select by project…" },
+                            ]
+                          : []),
+                      ]}
+                    />
                   </label>
 
                   {previewModal.removeContext.targetScope === "selected-projects" && (
