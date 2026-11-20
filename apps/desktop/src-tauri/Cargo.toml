@@ -1,6 +1,6 @@
 [package]
 name = "harness-control-desktop"
-version = "0.1.0"
+version = "0.2.0"
 description = "Desktop dashboard for harness-control"
 edition = "2021"
 
@@ -8,4 +8,4 @@ edition = "2021"
 tauri-build = { version = "2.7.6", features = [] }
 
 [dependencies]
-tauri = { version = "2.12.7", features = [] }
+tauri = { version = "2.12.7", features = ["tray-icon"] }

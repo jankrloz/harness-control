@@ -2,7 +2,12 @@
 import type { DryRunPreview } from "@harness-control/core";
 import { startDaemon } from "@harness-control/server";
 import { Command } from "commander";
-import { connectOrStartDaemon } from "./daemon-bridge.js";
+import {
+  connectOrStartDaemon,
+  getDaemonStatus,
+  restartDaemon,
+  stopDaemon,
+} from "./daemon-bridge.js";
 import { launchTui } from "./tui.js";
 
 function printPreview(preview: DryRunPreview): void {
@@ -29,7 +34,7 @@ const program = new Command();
 program
   .name("harness-control")
   .description("Unified visibility dashboard and orchestration wrapper across AI coding harnesses")
-  .version("0.1.0");
+  .version("0.2.0");
 
 program
   .command("serve")
@@ -37,6 +42,83 @@ program
   .option("-p, --port <port>", "Port to listen on", "4318")
   .action(async (opts: { port: string }) => {
     await startDaemon(Number(opts.port));
+  });
+
+const daemonCmd = program
+  .command("daemon")
+  .description("Control the background harness-control daemon");
+
+daemonCmd
+  .command("start")
+  .description("Start the background daemon if not already running")
+  .option("-f, --foreground", "Run in the foreground instead of detaching")
+  .option("-p, --port <port>", "Port to listen on (foreground only)", "4318")
+  .action(async (opts: { foreground?: boolean; port: string }) => {
+    if (opts.foreground) {
+      await startDaemon(Number(opts.port));
+      return;
+    }
+    const existing = await getDaemonStatus();
+    if (existing) {
+      console.log(`Daemon already running (pid ${existing.pid}, port ${existing.port}).`);
+      return;
+    }
+    const client = await connectOrStartDaemon();
+    const st = await client.getStatus();
+    console.log(
+      st
+        ? `Started harness-controld (pid ${st.pid}, port ${st.port}).`
+        : "Started harness-controld.",
+    );
+  });
+
+daemonCmd
+  .command("stop")
+  .description("Gracefully stop the background daemon (SIGTERM)")
+  .action(async () => {
+    const { stoppedPids } = await stopDaemon(false);
+    if (stoppedPids.length === 0) {
+      console.log("Daemon is not running.");
+      return;
+    }
+    console.log(`Stopped harness-controld (pid ${stoppedPids.join(", ")}).`);
+  });
+
+daemonCmd
+  .command("kill")
+  .description("Force-kill the background daemon (SIGKILL)")
+  .action(async () => {
+    const { stoppedPids } = await stopDaemon(true);
+    if (stoppedPids.length === 0) {
+      console.log("Daemon is not running.");
+      return;
+    }
+    console.log(`Killed harness-controld (pid ${stoppedPids.join(", ")}).`);
+  });
+
+daemonCmd
+  .command("restart")
+  .description("Restart the background daemon")
+  .action(async () => {
+    const st = await restartDaemon();
+    if (st) {
+      console.log(`Restarted harness-controld (pid ${st.pid}, port ${st.port}).`);
+    } else {
+      console.log("Restarted harness-controld.");
+    }
+  });
+
+daemonCmd
+  .command("status")
+  .description("Check background daemon status")
+  .action(async () => {
+    const st = await getDaemonStatus();
+    if (!st) {
+      console.log("Daemon: OFFLINE");
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`Daemon: ONLINE (pid ${st.pid}, port ${st.port}, uptime ${st.uptimeSeconds}s)`);
   });
 
 program
